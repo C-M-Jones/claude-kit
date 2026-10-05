@@ -926,22 +926,25 @@ export const register: Register = (on, options) => {
           <Box position="absolute" top={0} left={0} right={0} bottom={0}>
             <Svg source={gridSvg(W)} alt="dotted grid" width={W} height={GRID_H} />
           </Box>
-          <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
-          {toggleCompact}
-          {isEmpty && <Text dimColor>{s.empty}</Text>}
-          {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
-          {running.map(a => (
-            <Svg key={a.id} source={agentSvg(W, a, at)} alt={`${a.description}: ${modelName(a.model)}, ${s.isRunning}`} width={W} height={66} />
-          ))}
-          {finished.length > 0 && toggleDone}
-          {!p.isDoneCollapsed &&
-            finished.map(a => (
-              <Svg key={a.id} source={agentSvg(W, a, at)} alt={`${a.description}: ${modelName(a.model)}, ${s.isFinished}`} width={W} height={66} />
+          {/* Positioned after the grid, so the content paints over it. */}
+          <Box flexDirection="column" position="relative">
+            <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
+            {toggleCompact}
+            {isEmpty && <Text dimColor>{s.empty}</Text>}
+            {running.length > 0 && section('h-run', `${s.running} · ${running.length}`)}
+            {running.map(a => (
+              <Svg key={a.id} source={agentSvg(W, a, at)} alt={`${a.description}: ${modelName(a.model)}, ${s.isRunning}`} width={W} height={66} />
             ))}
-          {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
-          {planned.map(pl => (
-            <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
-          ))}
+            {finished.length > 0 && toggleDone}
+            {!p.isDoneCollapsed &&
+              finished.map(a => (
+                <Svg key={a.id} source={agentSvg(W, a, at)} alt={`${a.description}: ${modelName(a.model)}, ${s.isFinished}`} width={W} height={66} />
+              ))}
+            {planned.length > 0 && section('h-plan', `${s.planned} · ${planned.length}`)}
+            {planned.map(pl => (
+              <Svg key={`plan-${pl.n}`} source={plannedSvg(W, pl)} alt={`${pl.n}. ${pl.title}: ${s.isPlanned}`} width={W} height={46} />
+            ))}
+          </Box>
         </Box>
       )
     }
