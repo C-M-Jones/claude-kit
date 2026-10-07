@@ -376,14 +376,15 @@ const totals = (list: AgentRun[], at: number) => {
 
 // --- desktop drawings: each row is one SVG, as the band above the prompt is.
 
-// The pane's backdrop: a dotted grid drawn once, tall enough for any list, and
-// clipped by the pane's own box; the row SVGs are transparent, so it shows through.
+// The pane's backdrop: a dotted grid as tall as the content laid over it; the
+// row SVGs are transparent, so it shows through between their marks.
 const GRID_STEP = 16
-const GRID_H = 4000
-const gridSvg = (W: number) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${GRID_H}" viewBox="0 0 ${W} ${GRID_H}">
+// A Text or Button row on the desktop is about 20px; the grid errs taller.
+const LINE_H = 24
+const gridSvg = (W: number, H: number) => `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <style>.d{fill:#d9d8d4}@media (prefers-color-scheme: dark){.d{fill:#3a3a38}}</style>
 <defs><pattern id="g" width="${GRID_STEP}" height="${GRID_STEP}" patternUnits="userSpaceOnUse"><circle class="d" cx="${GRID_STEP / 2}" cy="${GRID_STEP / 2}" r="1"/></pattern></defs>
-<rect width="${W}" height="${GRID_H}" fill="url(#g)"/>
+<rect width="${W}" height="${H}" fill="url(#g)"/>
 </svg>`
 
 const PANE_CSS = `<style>
@@ -921,13 +922,15 @@ export const register: Register = (on, options) => {
           </Box>
         )
       }
+      const shownDone = p.isDoneCollapsed ? 0 : finished.length
+      const lines = 1 + (isEmpty ? 1 : 0) + (running.length > 0 ? 1 : 0) + (finished.length > 0 ? 1 : 0) + (planned.length > 0 ? 1 : 0)
+      const gridH = headerHeight(title) + lines * LINE_H + (running.length + shownDone) * 66 + planned.length * 46
       return (
-        <Box flexDirection="column" overflow="hidden">
-          <Box position="absolute" top={0} left={0} right={0} bottom={0}>
-            <Svg source={gridSvg(W)} alt="dotted grid" width={W} height={GRID_H} />
-          </Box>
-          {/* Positioned after the grid, so the content paints over it. */}
-          <Box flexDirection="column" position="relative">
+        <Box flexDirection="column">
+          {/* The grid sizes the pane; the content is placed over it, as an
+              absolute Box paints over the siblings before it. */}
+          <Svg source={gridSvg(W, gridH)} alt="dotted grid" width={W} height={gridH} />
+          <Box flexDirection="column" position="absolute" top={0} left={0} right={0}>
             <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
             {toggleCompact}
             {isEmpty && <Text dimColor>{s.empty}</Text>}
