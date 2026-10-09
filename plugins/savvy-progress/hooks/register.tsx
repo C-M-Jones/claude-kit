@@ -730,15 +730,17 @@ export const register: Register = (on, options) => {
     const input = e as unknown as { done?: number; total?: number; note?: string }
     const agentId = e.agentId
     if (!agentId) return { result: 'ignored: only subagents report steps' }
+    let matched = false
     await update($, agents, list =>
       list.map(a => {
         if (a.agentId !== agentId) return a
+        matched = true
         const total = Math.max(0, Math.round(input.total ?? a.stepTotal ?? 0))
         const done = Math.max(0, Math.round(input.done ?? a.stepDone ?? 0))
         return { ...a, stepTotal: total, stepDone: total ? Math.min(total, done) : done, stepNote: input.note?.trim() || undefined }
       }),
     )
-    return { result: 'ok' }
+    return { result: matched ? 'ok' : `ignored: no panel row for agent ${agentId}` }
   })
 
   // Safety net: worker launches move the faint layer even if the orchestrator forgets to report.
