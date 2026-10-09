@@ -1045,7 +1045,8 @@ export const register: Register = (on, options) => {
       />
     )
 
-    if ('Svg' in ui) {
+    // The terminal's element table is completed with an `Svg` that draws nothing: test the surface too.
+    if (e.surface !== 'terminal' && 'Svg' in ui) {
       const { Svg } = ui
       // About 8 CSS px per reported column; the rest is the count, the dismiss
       // and their gaps. No floor above the slot: a row wider than it would wrap.
