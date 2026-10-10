@@ -16,6 +16,9 @@ savvy-flow and savvy-progress work on their own and light up together: with both
 
 Additions to **savvy-progress** only. savvy-flow is unchanged.
 
+<p><img src="plugins/savvy-progress/docs/bar.png" alt="The savvy-progress bar above the prompt: the task's title, a pixel progress bar at Tasks 2/4, 50%, and the active step's crab" width="720"></p>
+<p><img src="plugins/savvy-progress/docs/panel.png" alt="The agents panel: cost, context and time tiles, session and weekly limits, four steps each with a costumed crab and a summary, and a running background command at 8%" width="460"></p>
+
 - **Solo steps:** work Claude does itself, without subagents, shows as steps with a status, a one-line summary and a timer.
 - **Step avatars:** each step gets a costumed crab like the subagent rows. The active one walks, and the bar's crab dresses as the current step.
 - **Cost per step:** a finished step shows how long it took and what it added to the session's cost and context.

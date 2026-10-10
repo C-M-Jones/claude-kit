@@ -2,6 +2,9 @@
 
 A Claude Code mod: a progress bar above the prompt and a live panel of subagents. Made for the [savvy-flow](../savvy-flow) skill, and useful with any subagents.
 
+<p><img src="docs/bar.png" alt="The progress bar above the prompt: the task's title, a pixel progress bar at Tasks 2/4, 50%, and the active step's crab" width="720"></p>
+<p><img src="docs/panel.png" alt="The agents panel: cost, context and time tiles, session and weekly limits, four steps each with a costumed crab and a summary, and a running background command at 8%" width="460"></p>
+
 - **Progress bar**: the flow's title, phase, accepted tasks out of planned, and a button with the crew size that opens the panel. It appears once something reports progress (savvy-flow does) or a `savvy-*` worker starts.
 - **Agents panel** (`/agents-info` toggles it; `/agents-info open` opens it or brings it forward without toggling): running, finished and planned subagents with model, effort, task progress, context, estimated cost and time. Working crabs walk, and each savvy tier animates its prop: the astronaut floats, the detective sweeps the magnifier, the engineer turns the wrench, the chef tosses the omelette, the racer runs with a fluttering flag. `prefers-reduced-motion` stops them.
 - **Solo steps**: work the orchestrator does itself, without subagents, shows as a list of steps with a status (`pending`, `active`, `done`), a one-line summary, and a timer on the active step. Each step gets a crab avatar too. The active one walks, pending ones wait faded, and the bar's crab dresses as the step in progress. Pass `avatar` (`detective`, `engineer`, `chef`, `racer`, `pirate`, `astronaut`) to choose one; otherwise one is picked from the step's title. A finished step shows how long it took and what it added to the session's cost and context (`+$0.42 · +8% context`). The active step's figures count up live.
