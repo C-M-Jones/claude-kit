@@ -811,7 +811,7 @@ export const register: Register = (on, options) => {
 
     const model = usage.model || e.model
     await update($, agents, list =>
-      list.map(a =>
+      list.map((a): AgentRun =>
         a.agentId !== agentId
           ? a
           : {
@@ -845,7 +845,7 @@ export const register: Register = (on, options) => {
     if (agentId) {
       const at = await $.clock.now()
       await update($, agents, list =>
-        list.map(a => {
+        list.map((a): AgentRun => {
           if (a.agentId !== agentId) return a
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = a.steps === 0 && e.usage
