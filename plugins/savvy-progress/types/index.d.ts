@@ -3,6 +3,20 @@ export type Phase = 'plan' | 'design' | 'delegate' | 'review' | 'close'
 /** A step the orchestrator works through itself, without a subagent. */
 export type StepStatus = 'pending' | 'active' | 'done'
 
+/** A file a step read or changed. */
+export type StepFile = {
+  path: string
+  reads: number
+  edits: number
+  /** The file did not exist before the step first changed it. */
+  isNew?: boolean
+  /** From the step's diff, once one was made. */
+  added?: number
+  removed?: number
+  /** Unified diff of what the step changed, made when the step finished (or on demand while it runs). */
+  diff?: string
+}
+
 export type PlannedTask = {
   title: string
   tier: string
@@ -22,6 +36,8 @@ export type PlannedTask = {
   costTo?: number
   ctxFrom?: number
   ctxTo?: number
+  /** Files the step read or changed, in the order it first touched them. */
+  files?: StepFile[]
 }
 
 export type BackgroundStatus = 'running' | 'completed' | 'failed' | 'killed'
@@ -99,6 +115,10 @@ export type Panel = {
   isCompact: boolean
   isDoneCollapsed: boolean
   autoOpenedFor: string
+  /** Steps opened to their files, by normalised title. */
+  expandedSteps?: string[]
+  /** The diff shown, as `<step key>|<path>`. */
+  diffOpen?: string
 }
 
 declare module 'claude-code' {
@@ -110,6 +130,8 @@ declare module 'claude-code' {
       now: number
       usage: SessionFigures
       background: BackgroundTask[]
+      /** Each file's text before a step first changed it, by `<step key>|<path>`; null when it did not exist. */
+      snapshots: Record<string, string | null>
     }
   }
 }

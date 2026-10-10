@@ -11,6 +11,7 @@ import type {
   Phase,
   PlannedTask,
   SessionFigures,
+  StepFile,
   StepStatus,
 } from '../types'
 
@@ -24,6 +25,7 @@ const panel = atom({ plugin: 'savvy-progress', key: 'panel' } as const, {
 const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 const usage = atom({ plugin: 'savvy-progress', key: 'usage' } as const, { rateLimits: [] } as SessionFigures)
 const bgCommands = atom({ plugin: 'savvy-progress', key: 'background' } as const, [] as BackgroundTask[])
+const snapshots = atom({ plugin: 'savvy-progress', key: 'snapshots' } as const, {} as Record<string, string | null>)
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
@@ -123,6 +125,17 @@ const STRINGS = {
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
     ctxWord: 'context',
+    files: 'files',
+    changed: 'changed',
+    finder: 'Finder',
+    diff: 'Diff',
+    hideDiff: 'Hide diff',
+    noChanges: 'No changes left in this file.',
+    tooBig: 'No diff for this file: too large, or diff could not run.',
+    fileRead: 'read',
+    fileNew: 'new',
+    edits: 'edits',
+    revealFailed: 'Could not show the file',
   },
   ru: {
     pane: 'Агенты',
@@ -169,6 +182,17 @@ const STRINGS = {
     silentFor: 'нет вывода',
     waitingOutput: 'ждём вывода…',
     ctxWord: 'контекста',
+    files: 'файлов',
+    changed: 'изменено',
+    finder: 'Finder',
+    diff: 'Дифф',
+    hideDiff: 'Скрыть дифф',
+    noChanges: 'В этом файле не осталось изменений.',
+    tooBig: 'Диффа нет: файл слишком большой или diff не запустился.',
+    fileRead: 'прочитан',
+    fileNew: 'новый',
+    edits: 'правок',
+    revealFailed: 'Не удалось показать файл',
     ctx: 'ctx',
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
@@ -221,6 +245,17 @@ const STRINGS = {
     silentFor: 'אין פלט כבר',
     waitingOutput: 'ממתין לפלט…',
     ctxWord: 'הקשר',
+    files: 'קבצים',
+    changed: 'שונו',
+    finder: 'Finder',
+    diff: 'שינויים',
+    hideDiff: 'הסתרת שינויים',
+    noChanges: 'לא נשארו שינויים בקובץ הזה.',
+    tooBig: 'אין תצוגת שינויים לקובץ הזה: הוא גדול מדי, או ש-diff לא רץ.',
+    fileRead: 'נקרא',
+    fileNew: 'חדש',
+    edits: 'עריכות',
+    revealFailed: 'לא ניתן להציג את הקובץ',
   },
 } as const
 
@@ -324,7 +359,13 @@ const untimed = (t: PlannedTask): PlannedTask => {
 
 // A step's clock and figures, carried from what the flow held before: set when
 // it becomes active, closed when it turns done, kept while it stays either.
+// The files a step touched ride along whatever the model resends.
 const settle = (t: PlannedTask, was: PlannedTask | undefined, at: number, fig: Figures): PlannedTask => {
+  const timed = settleTiming(t, was, at, fig)
+  return was?.files ? { ...timed, files: was.files } : timed
+}
+
+const settleTiming = (t: PlannedTask, was: PlannedTask | undefined, at: number, fig: Figures): PlannedTask => {
   const bare = untimed(t)
   if (t.status === 'active') {
     if (was?.status === 'active') return { ...bare, activeSince: was.activeSince ?? at, costFrom: was.costFrom, ctxFrom: was.ctxFrom }
@@ -640,6 +681,8 @@ const totals = (list: AgentRun[], at: number) => {
 const GRID_STEP = 16
 // A Text or Button row on the desktop is about 20px; the grid errs taller.
 const LINE_H = 24
+// A line of a Code diff on the desktop, with room to spare.
+const DIFF_LINE_H = 20
 // The engine refuses an Svg taller than 4096px, so a long grid is stacked from
 // tiles of at most this height; a multiple of GRID_STEP keeps the dots aligned.
 const GRID_TILE = 4096
@@ -1323,6 +1366,169 @@ async function announceBackground($: EngineInterface, at: number): Promise<void>
   for (const b of [...ended, ...quiet]) $.ui.toast(bgToast(b, at), { timeoutMs: b.status === 'completed' ? 6000 : 10000 })
 }
 
+// --- files each step read or changed, and what it changed in them.
+
+const FILE_TOOLS = { Read: 'read', Edit: 'edit', Write: 'edit', NotebookEdit: 'edit' } as const
+type FileTool = keyof typeof FILE_TOOLS
+
+const SNAPSHOT_MAX = 512 * 1024
+const DIFF_MAX = 40_000
+// A snapshot too large to keep: the step lists the file, without a diff.
+const TOO_BIG = '\u0000too-big'
+
+const stepKey = (t: Pick<PlannedTask, 'title'>): string => norm(t.title)
+const fileKey = (step: string, path: string): string => `${step}|${path}`
+
+// The session's folder and home, to show paths short; set on every (re)load.
+let cwd = ''
+let home = ''
+
+const shortPath = (path: string): string =>
+  cwd && path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path
+
+const pathOf = (e: unknown): string => {
+  const input = e as { file_path?: unknown; notebook_path?: unknown }
+  return String(input.file_path ?? input.notebook_path ?? '').trim()
+}
+
+// One more read or edit of `path` on each step in `keys`.
+const touch = (f: Flow, keys: Set<string>, path: string, kind: 'read' | 'edit', isNew: boolean): Flow => ({
+  ...f,
+  tasks: f.tasks.map(t => {
+    if (!keys.has(stepKey(t))) return t
+    const files = t.files ?? []
+    const was = files.find(x => x.path === path)
+    const base: StepFile = was ?? { path, reads: 0, edits: 0, ...(isNew && kind === 'edit' ? { isNew: true } : {}) }
+    // An edit makes any diff made so far stale.
+    const entry: StepFile =
+      kind === 'read' ? { ...base, reads: base.reads + 1 } : { ...base, edits: base.edits + 1, diff: undefined, added: undefined, removed: undefined }
+    return { ...t, files: was ? files.map(x => (x.path === path ? entry : x)) : [...files, entry].slice(-50) }
+  }),
+})
+
+// Cuts a long diff at a hunk boundary, so what is kept still parses.
+const cutDiff = (text: string): string => {
+  if (text.length <= DIFF_MAX) return text
+  const at = text.lastIndexOf('\n@@', DIFF_MAX)
+  return at > 0 ? text.slice(0, at + 1) : text.slice(0, text.lastIndexOf('\n', DIFF_MAX) + 1)
+}
+
+// What changed in `path` since `before`, by the system's diff: the text read
+// from stdin against the file as it is now (or /dev/null once it is gone).
+async function makeDiff($: EngineInterface, before: string | null | undefined, path: string): Promise<Partial<StepFile>> {
+  if (before === undefined || before === TOO_BIG) return {}
+  const exists = await $.fs.exists(path).catch(() => false)
+  const label = shortPath(path)
+  const r = await $.process.run(['diff', '-u', '--label', `a/${label}`, '--label', `b/${label}`, '-', exists ? path : '/dev/null'], {
+    stdin: before ?? '',
+  })
+  // 0: the same, 1: different, anything else: diff failed.
+  if (r.exitCode > 1) return {}
+  let added = 0
+  let removed = 0
+  for (const l of r.stdout.split('\n')) {
+    if (l.startsWith('+') && !l.startsWith('+++')) added++
+    else if (l.startsWith('-') && !l.startsWith('---')) removed++
+  }
+  return { diff: cutDiff(r.stdout), added, removed }
+}
+
+// Saves the diffs of the given step files into the flow; the snapshots they
+// came from go when `isFinal`.
+async function storeDiffs($: EngineInterface, made: Map<string, Partial<StepFile>>, isFinal: boolean): Promise<void> {
+  if (!made.size) return
+  await update($, flow, p =>
+    p
+      ? {
+          ...p,
+          tasks: p.tasks.map(t =>
+            t.files
+              ? { ...t, files: t.files.map(x => ({ ...x, ...(made.get(fileKey(stepKey(t), x.path)) ?? {}) })) }
+              : t,
+          ),
+        }
+      : p,
+  )
+  if (isFinal) await update($, snapshots, all => Object.fromEntries(Object.entries(all).filter(([k]) => !made.has(k))))
+}
+
+// Diffs every file a finished step changed, once, as the step closes.
+async function finalizeSteps($: EngineInterface): Promise<void> {
+  const f = await read($, flow)
+  if (!f) return
+  const snaps = await read($, snapshots)
+  const made = new Map<string, Partial<StepFile>>()
+  for (const t of f.tasks) {
+    if (t.status !== 'done') continue
+    for (const file of t.files ?? []) {
+      const k = fileKey(stepKey(t), file.path)
+      if (!file.edits || !(k in snaps)) continue
+      try {
+        made.set(k, snaps[k] === TOO_BIG ? { diff: undefined } : await makeDiff($, snaps[k], file.path))
+      } catch {
+        made.set(k, {})
+      }
+    }
+  }
+  await storeDiffs($, made, true)
+}
+
+// Shows the file in Finder; elsewhere, opens its folder.
+async function reveal($: EngineInterface, path: string): Promise<void> {
+  try {
+    const r = await $.process.run(['open', '-R', path])
+    if (r.exitCode === 0) return
+  } catch {
+    // Not macOS: try the desktop's opener on the folder.
+  }
+  try {
+    const r = await $.process.run(['xdg-open', path.replace(/\/[^/]*$/, '') || '/'])
+    if (r.exitCode === 0) return
+  } catch {
+    // Fall through to the toast.
+  }
+  $.ui.toast(`${tr().revealFailed}: ${shortPath(path)}`)
+}
+
+// Opens or closes one file's diff; a running step's diff is made fresh.
+async function toggleDiff($: EngineInterface, step: PlannedTask, file: StepFile): Promise<void> {
+  const k = fileKey(stepKey(step), file.path)
+  const p = await read($, panel)
+  if (p.diffOpen === k) {
+    await update($, panel, prev => ({ ...prev, diffOpen: '' }))
+    return
+  }
+  const snaps = await read($, snapshots)
+  if (k in snaps && (step.status === 'active' || file.diff === undefined)) {
+    try {
+      await storeDiffs($, new Map([[k, await makeDiff($, snaps[k], file.path)]]), false)
+    } catch {
+      // Shown without a diff.
+    }
+  }
+  await update($, panel, prev => ({ ...prev, diffOpen: k }))
+}
+
+const toggleStep = ($: EngineInterface, key: string) =>
+  update($, panel, prev => {
+    const open = new Set(prev.expandedSteps ?? [])
+    if (open.has(key)) open.delete(key)
+    else open.add(key)
+    return { ...prev, expandedSteps: [...open] }
+  })
+
+const fileStats = (file: StepFile): string => {
+  const s = tr()
+  if (!file.edits) return s.fileRead
+  const counts = file.added !== undefined ? `+${file.added} −${file.removed ?? 0}` : `${file.edits} ${s.edits}`
+  return file.isNew ? `${s.fileNew} · ${counts}` : counts
+}
+
+const filesHint = (files: StepFile[], isOpen: boolean): string =>
+  files.length
+    ? `${isOpen ? '▾' : '▸'} ${files.length} ${tr().files}${files.some(f => f.edits) ? ` · ${files.filter(f => f.edits).length} ${tr().changed}` : ''}`
+    : ''
+
 async function autoOpen($: EngineInterface, key: string): Promise<void> {
   const p = await read($, panel)
   if (p.autoOpenedFor === key) return
@@ -1334,6 +1540,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
     lang = await detectLang($, options.language)
+    cwd = started.cwd.replace(/\/$/, '')
+    home = ((await $.env.get('HOME')) ?? '').replace(/\/$/, '')
     await $.tool.register({
       name: 'progress',
       description:
@@ -1478,6 +1686,37 @@ export const register: Register = (on, options) => {
     return result
   })
 
+  // Reads and edits while a step is active belong to that step. Before a step
+  // first changes a file, the file's text is kept, so the step's diff is its own.
+  on('tool.call', { tool: /^(Read|Edit|Write|NotebookEdit)$/ }, async ($, e, next) => {
+    const kind = FILE_TOOLS[e.tool as FileTool]
+    const path = pathOf(e)
+    const f = await read($, flow)
+    const active = f && !f.isFinished ? f.tasks.filter(t => t.status === 'active') : []
+    if (!path || !active.length) return next(e)
+    let isNew = false
+    if (kind === 'edit') {
+      const snaps = await read($, snapshots)
+      const missing = active.filter(t => !(fileKey(stepKey(t), path) in snaps))
+      if (missing.length) {
+        let before: string | null
+        try {
+          const { size } = await $.fs.stat(path)
+          before = size <= SNAPSHOT_MAX ? await $.fs.read(path) : TOO_BIG
+        } catch {
+          before = null
+        }
+        isNew = before === null
+        await update($, snapshots, all => ({ ...all, ...Object.fromEntries(missing.map(t => [fileKey(stepKey(t), path), before])) }))
+      }
+    }
+    const result = await next(e)
+    if (result.deny !== undefined || result.isError) return result
+    const keys = new Set(active.map(stepKey))
+    await update($, flow, p => (p ? touch(p, keys, path, kind, isNew) : p))
+    return result
+  })
+
   // Stopping a task by hand ends its row at once.
   on('tool.call', { tool: 'TaskStop' }, async ($, e, next) => {
     const result = await next(e)
@@ -1534,6 +1773,7 @@ export const register: Register = (on, options) => {
     if (isNewFlow(prev, input) && input.title !== undefined) {
       // A new flow starts with a clean list; agents still running stay.
       await update($, agents, list => list.filter(a => a.status === 'running'))
+      await update($, snapshots, () => ({}))
     }
     // A host with no clock (a test kit, say) still takes the report: step times then stand at the last tick.
     const at = await $.clock.now().catch(() => read($, now))
@@ -1548,6 +1788,7 @@ export const register: Register = (on, options) => {
       // No figures: the step keeps its time, without a cost.
     }
     const next = await update($, flow, p => merge(p, input, at, fig))
+    await finalizeSteps($)
     if (next && input.tasks?.length) await autoOpen($, next.title)
     return { result: `ok: ${label(next ?? blank())}` }
   })
@@ -1735,6 +1976,42 @@ export const register: Register = (on, options) => {
     )
     const isEmpty = list.length === 0 && planned.length === 0 && steps.length === 0 && bg.length === 0
     const summary = tilesAlt(tiles, limits)
+    const expanded = new Set(p.expandedSteps ?? [])
+    // Indent from where a line starts reading: the left, or the right in Hebrew.
+    const indent = (n: number) => (isRtl() ? { marginRight: n } : { marginLeft: n })
+    const { Code } = ui
+
+    // A step's files: each with what the step did to it, a button to show it in
+    // Finder and, for a changed file, one to open its diff underneath.
+    const fileList = (step: Planned) => (
+      <Box key={`files-${stepKey(step)}`} flexDirection="column" {...indent(e.surface === 'desktop' ? 5 : 2)} marginBottom={1}>
+        {(step.files ?? []).map(file => {
+          const k = fileKey(stepKey(step), file.path)
+          const isDiffOpen = p.diffOpen === k
+          return (
+            <Box key={`file-${k}`} flexDirection="column">
+              <Box flexDirection="row" gap={1}>
+                <Text wrap="truncate-start">{shortPath(file.path)}</Text>
+                <Text dimColor={!file.edits} color={file.edits ? (file.isNew ? 'green' : undefined) : undefined}>
+                  {fileStats(file)}
+                </Text>
+                <Button key={`finder-${k}`} label={s.finder} plain onPress={() => reveal($, file.path)} />
+                {file.edits ? (
+                  <Button key={`diff-${k}`} label={isDiffOpen ? s.hideDiff : s.diff} plain onPress={() => toggleDiff($, step, file)} />
+                ) : null}
+              </Box>
+              {isDiffOpen ? (
+                file.diff ? (
+                  <Code key={`code-${k}`} source={file.diff} format="diff" path={file.path} />
+                ) : (
+                  <Text dimColor>{file.diff === '' ? s.noChanges : s.tooBig}</Text>
+                )
+              ) : null}
+            </Box>
+          )
+        })}
+      </Box>
+    )
 
     if (e.surface === 'desktop' && 'Svg' in ui) {
       const { Svg } = ui
@@ -1758,10 +2035,18 @@ export const register: Register = (on, options) => {
       const shownDone = p.isDoneCollapsed ? 0 : finished.length
       const lines = 1 + (isEmpty ? 1 : 0) + (running.length > 0 ? 1 : 0) + (finished.length > 0 ? 1 : 0) + (planned.length > 0 ? 1 : 0)
       const sections = (steps.length > 0 ? 1 : 0) + (bg.length > 0 ? 1 : 0)
+      // A step's files button, and when open a line per file and the open diff's lines.
+      const filesHeight = (st: Planned): number => {
+        if (!st.files?.length) return 0
+        if (!expanded.has(stepKey(st))) return LINE_H
+        const open = st.files.find(fl => p.diffOpen === fileKey(stepKey(st), fl.path))
+        const diffLines = open?.diff ? open.diff.split('\n').length : open ? 1 : 0
+        return LINE_H * (2 + st.files.length) + diffLines * DIFF_LINE_H
+      }
       const gridH =
         headerHeight(title, limits.length) +
         (lines + sections) * LINE_H +
-        steps.reduce((h, st) => h + stepHeight(W, st, u), 0) +
+        steps.reduce((h, st) => h + stepHeight(W, st, u) + filesHeight(st), 0) +
         bg.reduce((h, b) => h + bgHeight(W, b), 0) +
         (running.length + shownDone) * 66 +
         planned.length * 46
@@ -1782,15 +2067,30 @@ export const register: Register = (on, options) => {
             {toggleCompact}
             {isEmpty && <Text dimColor>{s.empty}</Text>}
             {steps.length > 0 && section('h-steps', stepsHeader)}
-            {steps.map(p => (
-              <Svg
-                key={`step-${p.n}`}
-                source={stepSvg(W, p, liveAt, u)}
-                alt={`${p.n}. ${p.title}: ${stepLabel(p, liveAt)}${stepSpend(p, u) ? `, ${stepSpend(p, u)}` : ''}${p.summary ? `. ${p.summary}` : ''}`}
-                width={W}
-                height={stepHeight(W, p, u)}
-              />
-            ))}
+            {steps.map(p => {
+              const isOpen = expanded.has(stepKey(p))
+              const row = (
+                <Svg
+                  key={`step-${p.n}`}
+                  source={stepSvg(W, p, liveAt, u)}
+                  alt={`${p.n}. ${p.title}: ${stepLabel(p, liveAt)}${stepSpend(p, u) ? `, ${stepSpend(p, u)}` : ''}${p.summary ? `. ${p.summary}` : ''}`}
+                  width={W}
+                  height={stepHeight(W, p, u)}
+                />
+              )
+              // A step with files says how many under its row; a tap there opens them.
+              return p.files?.length ? (
+                <Box key={`step-${p.n}`} flexDirection="column" alignItems={align}>
+                  {row}
+                  <Box {...indent(5)}>
+                    <Button key={`open-${stepKey(p)}`} label={filesHint(p.files, isOpen)} plain onPress={() => toggleStep($, stepKey(p))} />
+                  </Box>
+                  {isOpen && fileList(p)}
+                </Box>
+              ) : (
+                row
+              )
+            })}
             {bg.length > 0 && section('h-bg', bgHeader)}
             {bg.map(b => (
               <Svg
@@ -1905,6 +2205,15 @@ export const register: Register = (on, options) => {
                     {pl.summary}
                   </Text>
                 ) : null}
+                {pl.files?.length ? (
+                  <Button
+                    key={`open-${stepKey(pl)}`}
+                    label={`  ${filesHint(pl.files, expanded.has(stepKey(pl)))}`}
+                    plain
+                    onPress={() => toggleStep($, stepKey(pl))}
+                  />
+                ) : null}
+                {expanded.has(stepKey(pl)) && fileList(pl)}
               </Box>
             ))}
             {bg.length > 0 && <Text dimColor>{bgHeader}</Text>}
