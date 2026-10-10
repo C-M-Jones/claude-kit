@@ -122,6 +122,7 @@ const STRINGS = {
     ctx: 'ctx',
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
+    ctxWord: 'context',
   },
   ru: {
     pane: 'Агенты',
@@ -167,6 +168,7 @@ const STRINGS = {
     bgKilled: 'остановлена',
     silentFor: 'нет вывода',
     waitingOutput: 'ждём вывода…',
+    ctxWord: 'контекста',
     ctx: 'ctx',
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
@@ -218,6 +220,7 @@ const STRINGS = {
     bgKilled: 'נעצר',
     silentFor: 'אין פלט כבר',
     waitingOutput: 'ממתין לפלט…',
+    ctxWord: 'הקשר',
   },
 } as const
 
@@ -297,23 +300,54 @@ const stepsOf = (f: Flow | null): (PlannedTask & { n: number })[] =>
 
 const activeSteps = (f: Flow): number => f.tasks.filter(t => t.status === 'active').length
 
-// The bar's crab dresses as the step being worked on, if any.
+// The bar's crab dresses as the step being worked on, or, once the flow is
+// done, as the step that finished it.
 const barCostume = (f: Flow): string => {
-  const step = f.isFinished ? undefined : f.tasks.find(t => t.status === 'active')
+  const step = f.isFinished ? f.tasks.filter(t => t.status).pop() : f.tasks.find(t => t.status === 'active')
   return step ? avatarOf(step) : 'other'
 }
 
-const merge = (prev: Flow | null, input: ProgressInput, at: number): Flow => {
+// A flow that just finished gets a celebration; later redraws leave it still.
+const PARTY_MS = 10_000
+const barMood = (f: Flow, at: number): Mood | undefined =>
+  f.isFinished && f.endedAt !== undefined && at - f.endedAt < PARTY_MS ? 'party' : undefined
+
+// The session's running figures, read when a step starts and when it finishes.
+type Figures = { cost?: number; ctx?: number }
+
+const TIMING_KEYS = ['activeSince', 'endedAt', 'costFrom', 'costTo', 'ctxFrom', 'ctxTo'] as const
+const untimed = (t: PlannedTask): PlannedTask => {
+  const out = { ...t }
+  for (const k of TIMING_KEYS) delete out[k]
+  return out
+}
+
+// A step's clock and figures, carried from what the flow held before: set when
+// it becomes active, closed when it turns done, kept while it stays either.
+const settle = (t: PlannedTask, was: PlannedTask | undefined, at: number, fig: Figures): PlannedTask => {
+  const bare = untimed(t)
+  if (t.status === 'active') {
+    if (was?.status === 'active') return { ...bare, activeSince: was.activeSince ?? at, costFrom: was.costFrom, ctxFrom: was.ctxFrom }
+    return { ...bare, activeSince: at, costFrom: fig.cost, ctxFrom: fig.ctx }
+  }
+  if (t.status === 'done' && was?.status === 'active') {
+    return { ...bare, activeSince: was.activeSince, endedAt: at, costFrom: was.costFrom, ctxFrom: was.ctxFrom, costTo: fig.cost, ctxTo: fig.ctx }
+  }
+  if (t.status === 'done' && was?.status === 'done') {
+    return { ...bare, ...Object.fromEntries(TIMING_KEYS.map(k => [k, was[k]]).filter(([, v]) => v !== undefined)) }
+  }
+  return bare
+}
+
+const merge = (prev: Flow | null, input: ProgressInput, at: number, fig: Figures = {}): Flow => {
   // A new title means a new flow: never carry counters over from an earlier one.
   const isNew = isNewFlow(prev, input) || !prev
   const base = isNew ? { ...blank(), startedAt: at } : { ...blank(), ...prev }
-  // A step keeps the moment it became active across updates that resend it.
-  const wasActive = new Map(base.tasks.filter(t => t.status === 'active').map(t => [norm(t.title), t.activeSince]))
-  const cleaned = (cleanTasks(input.tasks) ?? base.tasks).map(t =>
-    t.status === 'active' ? { ...t, activeSince: wasActive.get(norm(t.title)) ?? at } : { ...t, activeSince: undefined },
-  )
+  const before = new Map(base.tasks.map(t => [norm(t.title), t]))
+  const incoming = cleanTasks(input.tasks) ?? base.tasks
   // Closing the flow completes every step still open.
-  const tasks = input.finished ? cleaned.map(t => (t.status ? { ...t, status: 'done' as const } : t)) : cleaned
+  const closed = input.finished ? incoming.map(t => (t.status ? { ...t, status: 'done' as const } : t)) : incoming
+  const tasks = closed.map(t => settle(t, before.get(norm(t.title)), at, fig))
   const total = Math.min(MAX_TASKS, Math.max(0, Math.round(input.total ?? (input.tasks ? tasks.length : base.total))))
   const stepsDone = tasks.some(t => t.status) ? tasks.filter(t => t.status === 'done').length : undefined
   const done = Math.min(total || Infinity, Math.max(0, Math.round(input.done ?? stepsDone ?? base.done)))
@@ -385,7 +419,7 @@ const fitText = (s: string, size: number, maxW: number): string => {
   return out + '…'
 }
 
-const rowSvg = (f: Flow, W: number, isWorking: boolean, costume = 'other'): string => {
+const rowSvg = (f: Flow, W: number, isWorking: boolean, costume = 'other', mood?: Mood): string => {
   // The title takes what it needs, up to 40% of the row; the bar takes the rest.
   const title = fitText(f.title, 13, Math.max(60, W * 0.4))
   const BAR_X = Math.round(16 + textWidth(title, 13) + 12)
@@ -457,7 +491,7 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean, costume = 'other'): stri
 <text x="${pillX + pillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle"${rtl ? ' direction="rtl"' : ''} font-family="${FONT}" font-size="11" font-weight="600" fill="#ffffff">${xml(text)}</text>
 </g>
 <text class="m" ${percentAt} font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
-${CRAB_CSS}${crab(rx(W - CRAB_W + 1, crabW), 0, costume, false, isWorking, 0.8, rtl)}
+${CRAB_CSS}${crab(rx(W - CRAB_W + 1, crabW), 0, costume, false, isWorking, 0.8, rtl, mood)}
 </svg>`
 }
 
@@ -674,7 +708,14 @@ const CRAB_CSS = `<style>
 @keyframes wave{50%{transform:skewY(-12deg) scaleX(.85)}}
 .c-explore.run .it{transform-origin:50% 100%;animation:fence .5s ease-in-out infinite}
 @keyframes fence{50%{transform:rotate(25deg)}}
-@media (prefers-reduced-motion: reduce){.run,.run g{animation:none!important}}
+/* Knocked out: on its back, legs kicking a few times, stars circling overhead. */
+.ko .la{animation:st .25s steps(1) 8}.ko .lb{animation:st .25s steps(1) 8 -.125s}.ko g{transform-box:fill-box}
+.dz0,.dz1,.dz2{animation:blink 1.2s steps(1) infinite}.dz1{animation-delay:-.4s}.dz2{animation-delay:-.8s}
+/* Celebrating: three hops, confetti that rises and fades once. */
+.party{animation:hop .4s ease-out 3}@keyframes hop{50%{transform:translateY(-3px)}}
+.cf{opacity:0;animation:cf 1.4s ease-out 2 both}.cf1{animation-delay:.15s}.cf2{animation-delay:.3s}.cf3{animation-delay:.45s}
+@keyframes cf{0%{opacity:0;transform:translateY(4px)}25%{opacity:1}100%{opacity:0;transform:translateY(-6px)}}
+@media (prefers-reduced-motion: reduce){.run,.run g,.ko g,.party,.dz0,.dz1,.dz2{animation:none!important}.cf{display:none}}
 </style>`
 
 const COSTUMES: Record<string, (f: Fill, t: string) => void> = {
@@ -740,7 +781,32 @@ const CRAB_SCALE = 1.1
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
 // legs stay outside it and step on their own. `mirror` flips the crab inside its
 // own box (x .. x + CRAB_BOX * scale) so it faces left.
-const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, mirror = false): string => {
+// How a crab feels: `ko` lies on its back under circling stars (a failed run),
+// `party` hops in confetti (a finished flow).
+type Mood = 'ko' | 'party'
+
+const DIZZY = [4, 14, 24].map((x, i) => `<rect class="dz${i}" x="${x}" y="0" width="2" height="2" fill="#F5C542"/>`).join('')
+const CONFETTI = [
+  [1, 8, '#D85A30'],
+  [27, 6, '#378ADD'],
+  [5, 3, '#F5C542'],
+  [24, 2, '#1D9E75'],
+  [14, 1, '#7F77DD'],
+  [10, 5, '#D0453F'],
+]
+  .map(([x, y, c], i) => `<rect class="cf cf${i % 4}" x="${x}" y="${y}" width="2" height="2" fill="${c}"/>`)
+  .join('')
+
+const crab = (
+  x: number,
+  y: number,
+  costume: string,
+  dim = false,
+  isWalking = false,
+  scale = CRAB_SCALE,
+  mirror = false,
+  mood?: Mood,
+): string => {
   const groups = new Map<string, string[]>([['bd', []]])
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
     if (!groups.has(cls)) groups.set(cls, [])
@@ -752,7 +818,11 @@ const crab = (x: number, y: number, costume: string, dim = false, isWalking = fa
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
   const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
   const place = mirror ? `translate(${x + CRAB_BOX * scale},${y}) scale(${-scale},${scale})` : `translate(${x},${y}) scale(${scale})`
-  return `<g transform="${place}" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
+  const parts = `${body}${group('la')}${group('lb')}`
+  // On its back: flipped about the crab's middle, the stars drawn upright above.
+  const pose = mood === 'ko' ? `<g transform="translate(0,30) scale(1,-1)">${parts}</g>${DIZZY}` : parts
+  const cls = `c-${costume}${isWalking && !mood ? ' run' : ''}${mood ? ` ${mood}` : ''}`
+  return `<g transform="${place}" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="${cls}">${pose}</g>${mood === 'party' ? CONFETTI : ''}</g>`
 }
 
 const statusMark = (x: number, y: number, status: string, color: string): string => {
@@ -781,8 +851,8 @@ const endText = (W: number, x: number, y: number, words = false): string =>
 const crabWidth = (scale: number): number => Math.round(CRAB_BOX * scale * 100) / 100
 
 // A panel crab at x in a row of width W: on the mirrored side and facing left in Hebrew.
-const rowCrab = (W: number, x: number, y: number, costume: string, dim = false, isWalking = false): string =>
-  crab(mx(W, x, crabWidth(CRAB_SCALE)), y, costume, dim, isWalking, CRAB_SCALE, isRtl())
+const rowCrab = (W: number, x: number, y: number, costume: string, dim = false, isWalking = false, mood?: Mood): string =>
+  crab(mx(W, x, crabWidth(CRAB_SCALE)), y, costume, dim, isWalking, CRAB_SCALE, isRtl(), mood)
 
 const svg = (W: number, H: number, body: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${CRAB_CSS}${body}</svg>`
@@ -880,11 +950,11 @@ const tilesAlt = (tiles: Tile[], limits: LimitWindow[]): string =>
 // --- steps the orchestrator works through itself.
 
 // An active step shows how long it has been going, so a slow one never looks frozen.
-const stepLabel = (p: Pick<PlannedTask, 'status' | 'activeSince'>, at: number): string =>
+const stepLabel = (p: Pick<PlannedTask, 'status' | 'activeSince' | 'endedAt'>, at: number): string =>
   p.status === 'done'
-    ? tr().stepDone
+    ? `${tr().stepDone}${p.activeSince !== undefined && p.endedAt !== undefined ? ` · ${fmtTime(p.endedAt - p.activeSince)}` : ''}`
     : p.status === 'active'
-      ? `${tr().stepActive}${p.activeSince ? ` · ${fmtTime(at - p.activeSince)}` : ''}`
+      ? `${tr().stepActive}${p.activeSince !== undefined ? ` · ${fmtTime(at - p.activeSince)}` : ''}`
       : tr().stepPending
 
 const stepColor = (status: StepStatus | undefined): string =>
@@ -907,18 +977,36 @@ const wrapLines = (s: string, size: number, maxW: number, max: number): string[]
 // Up to two lines of a step's summary.
 const wrap2 = (s: string, size: number, maxW: number): string[] => wrapLines(s, size, maxW, 2)
 
+// What a step spent of the session: money and context, so far while it runs,
+// in all once done. Empty for a step never seen active.
+const stepSpend = (p: PlannedTask, u: SessionFigures): string => {
+  const isLive = p.status === 'active'
+  const cost = isLive ? u.costUsd : p.costTo
+  const ctx = isLive ? u.contextPercent : p.ctxTo
+  const parts: string[] = []
+  if (cost !== undefined && p.costFrom !== undefined) parts.push(`+${fmtCost(Math.max(0, cost - p.costFrom))}`)
+  const ctxDelta = ctx !== undefined && p.ctxFrom !== undefined ? Math.round(ctx - p.ctxFrom) : 0
+  if (ctxDelta >= 1) parts.push(`+${ctxDelta}% ${tr().ctxWord}`)
+  return parts.join(' · ')
+}
+
 // Steps sit beside a crab, as agent rows do, and keep room for it without a summary.
+// The spend sits right of the summary, which wraps in what is left.
 const STEP_X = 42
-const stepLines = (W: number, p: Planned): string[] => wrap2(p.summary ?? '', 11.5, W - STEP_X - 4)
+const spendWidth = (spend: string): number => (spend ? textWidth(spend, 11) + 12 : 0)
+const stepLines = (W: number, p: Planned, spend: string): string[] =>
+  wrap2(p.summary ?? '', 11.5, W - STEP_X - 4 - spendWidth(spend))
 
-const stepHeight = (W: number, p: Planned): number => Math.max(46, 30 + stepLines(W, p).length * 15)
+const stepHeight = (W: number, p: Planned, u: SessionFigures): number =>
+  Math.max(46, 30 + stepLines(W, p, stepSpend(p, u)).length * 15)
 
-const stepSvg = (W: number, p: Planned, at: number): string => {
+const stepSvg = (W: number, p: Planned, at: number, u: SessionFigures): string => {
   const color = stepColor(p.status)
   const tag = stepLabel(p, at)
   const tagW = textWidth(tag, 11) + 4
-  const H = stepHeight(W, p)
-  const lines = stepLines(W, p)
+  const spend = stepSpend(p, u)
+  const H = stepHeight(W, p, u)
+  const lines = stepLines(W, p, spend)
   const mark = statusMark(mx(W, W - 8), 14, p.status === 'active' ? 'running' : p.status === 'done' ? 'done' : 'planned', color)
   // The active crab walks; a pending one waits, faded; a finished one stands still.
   return svg(
@@ -928,6 +1016,7 @@ const stepSvg = (W: number, p: Planned, at: number): string => {
 <text class="${p.status === 'pending' ? 's' : 't'}" ${startText(W, STEP_X, 18)} font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(`${p.n}. ${p.title}`, 13, W - STEP_X - tagW - 30))}</text>
 <text ${endText(W, W - 22, 18, true)} font-family="${FONT}" font-size="11" font-weight="500" fill="${color}">${xml(tag)}</text>
 ${lines.map((l, i) => `<text class="s" ${startText(W, STEP_X, 35 + i * 15)} font-family="${FONT}" font-size="11.5">${xml(l)}</text>`).join('')}
+${spend ? `<text class="m" ${endText(W, W - 22, 35, true)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(spend)}</text>` : ''}
 <line class="ln" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/>`,
   )
 }
@@ -1081,7 +1170,7 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   return svg(
     W,
     66,
-    `${rowCrab(W, 0, 14, costumeOf(a.type), false, a.status === 'running')}
+    `${rowCrab(W, 0, 14, costumeOf(a.type), false, a.status === 'running', a.status === 'failed' ? 'ko' : undefined)}
 <text class="t" ${startText(W, 42, 18)} font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(a.description || a.type, 13, textW))}</text>
 <text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tier === 'other' ? a.type : tierWord(tier))}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
 ${steps && stepsW > 30 ? `<text class="t" ${startText(W, 42, 49)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
@@ -1119,7 +1208,7 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
   const shown = icons.slice(0, fit)
   const more = icons.length - shown.length
   const body = shown
-    .map((ic, i) => rowCrab(W, i * 36, 0, ic.k, ic.dim, ic.s === 'running') + (ic.s === 'running' ? `<circle class="live" cx="${mx(W, i * 36 + 32)}" cy="4" r="3" fill="${ic.c}"/>` : ''))
+    .map((ic, i) => rowCrab(W, i * 36, 0, ic.k, ic.dim, ic.s === 'running', ic.s === 'failed' ? 'ko' : undefined) + (ic.s === 'running' ? `<circle class="live" cx="${mx(W, i * 36 + 32)}" cy="4" r="3" fill="${ic.c}"/>` : ''))
     .join('')
   const x = shown.length * 36 + (more ? 4 : 0)
   return svg(
@@ -1193,7 +1282,7 @@ async function followOutput($: EngineInterface, at: number, only?: string): Prom
       await update($, bgCommands, all =>
         all.map(x =>
           x.id === b.id
-            ? { ...x, outputBytes: size, lastOutputAt: at, lastLine: line, progress, ...(ended ? { status: ended, endedAt } : {}) }
+            ? { ...x, outputBytes: size, lastOutputAt: at, lastLine: line, progress, isSilenceAnnounced: false, ...(ended ? { status: ended, endedAt } : {}) }
             : x,
         ),
       )
@@ -1205,6 +1294,33 @@ async function followOutput($: EngineInterface, at: number, only?: string): Prom
       }
     }
   }
+}
+
+// What a toast says about a command: how it ended, or that it went quiet.
+const bgToast = (b: BackgroundTask, at: number): string => {
+  const label = clip(b.label, 60)
+  const time = fmtTime(bgElapsed(b, at))
+  if (b.status === 'completed') return `✓ ${label}: ${tr().bgCompleted} · ${time}`
+  if (b.status === 'running') return `⏳ ${label}: ${tr().silentFor} ${fmtTime(at - (b.lastOutputAt ?? b.startedAt))}`
+  const why = b.lastLine ? ` · ${clip(b.lastLine, 80)}` : ''
+  return `${b.status === 'failed' ? '✗' : '■'} ${label}: ${bgStatusLabel(b)} · ${time}${why}`
+}
+
+// Tells the person once when a background command ends, and once each time it
+// goes quiet, so it is seen without the panel open.
+async function announceBackground($: EngineInterface, at: number): Promise<void> {
+  const list = await read($, bgCommands)
+  const ended = list.filter(b => b.status !== 'running' && !b.isAnnounced)
+  const quiet = list.filter(b => isSilent(b, at) && !b.isSilenceAnnounced)
+  if (!ended.length && !quiet.length) return
+  const endedIds = new Set(ended.map(b => b.id))
+  const quietIds = new Set(quiet.map(b => b.id))
+  await update($, bgCommands, all =>
+    all.map(b =>
+      endedIds.has(b.id) ? { ...b, isAnnounced: true } : quietIds.has(b.id) ? { ...b, isSilenceAnnounced: true } : b,
+    ),
+  )
+  for (const b of [...ended, ...quiet]) $.ui.toast(bgToast(b, at), { timeoutMs: b.status === 'completed' ? 6000 : 10000 })
 }
 
 async function autoOpen($: EngineInterface, key: string): Promise<void> {
@@ -1297,7 +1413,18 @@ export const register: Register = (on, options) => {
         const isBgRunning = bg.some(b => b.status === 'running')
         if (!list.some(a => a.status === 'running') && !(f && !f.isFinished && activeSteps(f)) && !isBgRunning) return
         const at = await $.clock.now()
-        if (isBgRunning) await followOutput($, at)
+        if (isBgRunning) {
+          await followOutput($, at)
+          await announceBackground($, at)
+        }
+        // An active step's cost climbs as it goes: read the session's figures every few seconds.
+        if (f && !f.isFinished && activeSteps(f) && Math.floor(at / 1000) % 5 === 0) {
+          try {
+            await storeUsage($, await $.session.usage())
+          } catch {
+            // Keep the last figures.
+          }
+        }
         await update($, now, () => at)
         $.ui.status(bgStatusLine(await read($, bgCommands), at))
       })()
@@ -1308,9 +1435,14 @@ export const register: Register = (on, options) => {
     } catch {
       // No figures yet: session.measure brings them after the first turn.
     }
-    // A running row with no ID or output file the engine would give was never a
-    // command (an earlier version read them out of any command's output text): it goes.
-    await update($, bgCommands, list => list.filter(b => b.status !== 'running' || (BG_ID.test(b.id) && b.outputFile?.startsWith('/'))))
+    // Rows that ended before this load are old news: no toast for them. A running
+    // row with no ID or output file the engine would give was never a command (an
+    // earlier version read them out of any command's output text): it goes.
+    await update($, bgCommands, list =>
+      list
+        .filter(b => b.status !== 'running' || (BG_ID.test(b.id) && b.outputFile?.startsWith('/')))
+        .map(b => (b.status === 'running' ? b : { ...b, isAnnounced: true })),
+    )
     return started
   })
 
@@ -1354,7 +1486,7 @@ export const register: Register = (on, options) => {
     if (id) {
       const at = await $.clock.now()
       await update($, bgCommands, list =>
-        list.map(b => (b.id === id && b.status === 'running' ? { ...b, status: 'killed' as const, endedAt: at } : b)),
+        list.map(b => (b.id === id && b.status === 'running' ? { ...b, status: 'killed' as const, endedAt: at, isAnnounced: true } : b)),
       )
       $.ui.status(bgStatusLine(await read($, bgCommands), at))
     }
@@ -1373,6 +1505,7 @@ export const register: Register = (on, options) => {
         await followOutput($, at, id)
         const status: BackgroundStatus = word === 'completed' ? 'completed' : word === 'killed' ? 'killed' : 'failed'
         await update($, bgCommands, list => list.map(b => (b.id === id ? { ...b, status, endedAt: at } : b)))
+        await announceBackground($, at)
         await update($, now, () => at)
         $.ui.status(bgStatusLine(await read($, bgCommands), at))
       }
@@ -1405,7 +1538,16 @@ export const register: Register = (on, options) => {
     // A host with no clock (a test kit, say) still takes the report: step times then stand at the last tick.
     const at = await $.clock.now().catch(() => read($, now))
     await update($, now, () => at)
-    const next = await update($, flow, p => merge(p, input, at))
+    // The session's figures right now, so a step's cost starts and stops on this call.
+    let fig: Figures = {}
+    try {
+      const u = await $.session.usage()
+      await storeUsage($, u)
+      fig = { cost: u.cost?.usd, ctx: u.context.percent }
+    } catch {
+      // No figures: the step keeps its time, without a cost.
+    }
+    const next = await update($, flow, p => merge(p, input, at, fig))
     if (next && input.tasks?.length) await autoOpen($, next.title)
     return { result: `ok: ${label(next ?? blank())}` }
   })
@@ -1619,7 +1761,7 @@ export const register: Register = (on, options) => {
       const gridH =
         headerHeight(title, limits.length) +
         (lines + sections) * LINE_H +
-        steps.reduce((h, st) => h + stepHeight(W, st), 0) +
+        steps.reduce((h, st) => h + stepHeight(W, st, u), 0) +
         bg.reduce((h, b) => h + bgHeight(W, b), 0) +
         (running.length + shownDone) * 66 +
         planned.length * 46
@@ -1643,10 +1785,10 @@ export const register: Register = (on, options) => {
             {steps.map(p => (
               <Svg
                 key={`step-${p.n}`}
-                source={stepSvg(W, p, liveAt)}
-                alt={`${p.n}. ${p.title}: ${stepLabel(p, liveAt)}${p.summary ? `. ${p.summary}` : ''}`}
+                source={stepSvg(W, p, liveAt, u)}
+                alt={`${p.n}. ${p.title}: ${stepLabel(p, liveAt)}${stepSpend(p, u) ? `, ${stepSpend(p, u)}` : ''}${p.summary ? `. ${p.summary}` : ''}`}
                 width={W}
-                height={stepHeight(W, p)}
+                height={stepHeight(W, p, u)}
               />
             ))}
             {bg.length > 0 && section('h-bg', bgHeader)}
@@ -1755,6 +1897,7 @@ export const register: Register = (on, options) => {
                     {pl.n}. {pl.title}
                   </Text>
                   <Text color={stepColor(pl.status)}>{stepLabel(pl, liveAt)}</Text>
+                  {stepSpend(pl, u) ? <Text dimColor>{stepSpend(pl, u)}</Text> : null}
                 </Box>
                 {pl.summary ? (
                   <Text dimColor wrap="wrap">
@@ -1839,6 +1982,7 @@ export const register: Register = (on, options) => {
       <Button key="savvy-agents" label={crew ? `×${crew}` : tr().details} plain onPress={() => void togglePane($)} />
     )
     const percent = `${Math.round(ratio(f) * 100)}%`
+    const mood = barMood(f, await $.clock.now().catch(() => read($, now)))
     const dismiss = (
       <Button
         key="savvy-dismiss"
@@ -1858,7 +2002,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Box flexDirection={isRtl() ? 'row-reverse' : 'row'} alignItems="center" gap={1}>
-            <Svg source={rowSvg(f, width, isWorking, barCostume(f))} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
+            <Svg source={rowSvg(f, width, isWorking, barCostume(f), mood)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
             {crewButton}
             {dismiss}
           </Box>

@@ -15,6 +15,13 @@ export type PlannedTask = {
   avatar?: string
   /** When the step last became active, in `$.clock.now()` milliseconds. */
   activeSince?: number
+  /** When an active step was marked done. */
+  endedAt?: number
+  /** The session's cost (USD) and context fill (%) when the step became active, and when it finished. */
+  costFrom?: number
+  costTo?: number
+  ctxFrom?: number
+  ctxTo?: number
 }
 
 export type BackgroundStatus = 'running' | 'completed' | 'failed' | 'killed'
@@ -33,6 +40,10 @@ export type BackgroundTask = {
   lastLine?: string
   /** 0 to 1, when the output reports `n/m`, `n of m` or a percentage. */
   progress?: number
+  /** A toast has said how it ended. */
+  isAnnounced?: boolean
+  /** A toast has said it went quiet; cleared when output comes again. */
+  isSilenceAnnounced?: boolean
 }
 
 export type Flow = {
