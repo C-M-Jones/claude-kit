@@ -30,9 +30,9 @@ type ProgressInput = {
 
 // ---------------------------------------------------------------------------
 // Language: the `language` option, else Claude Code's `language` setting, else the
-// process locale; English when nothing says Russian.
+// process locale; English when nothing says Hebrew or Russian.
 
-type Lang = 'en' | 'ru'
+type Lang = 'en' | 'ru' | 'he'
 
 const STRINGS = {
   en: {
@@ -62,6 +62,9 @@ const STRINGS = {
     tasks: 'Tasks',
     review: 'Review',
     busy: 'running',
+    ctx: 'ctx',
+    tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
+    effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
   },
   ru: {
     pane: 'Агенты',
@@ -90,6 +93,40 @@ const STRINGS = {
     tasks: 'Задачи',
     review: 'Ревью',
     busy: 'в работе',
+    ctx: 'ctx',
+    tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
+    effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
+  },
+  he: {
+    pane: 'סוכנים',
+    cost: 'עלות',
+    tokens: 'טוקנים',
+    time: 'זמן',
+    collapse: 'כיווץ',
+    expand: 'הרחבה',
+    running: 'פועלים',
+    finished: 'הסתיימו',
+    planned: 'מתוכננים',
+    empty: 'עדיין אין סוכנים.',
+    round: 'סבב',
+    failed: 'שגיאה',
+    after: 'אחרי',
+    tokensWord: 'טוקנים',
+    agentsCount: 'סוכנים',
+    isRunning: 'פועל',
+    isFinished: 'הסתיים',
+    isPlanned: 'מתוכנן',
+    opened: 'חלונית הסוכנים נפתחה.',
+    closed: 'חלונית הסוכנים נסגרה.',
+    done: 'הושלם',
+    plan: 'תכנון',
+    design: 'עיצוב',
+    tasks: 'משימות',
+    review: 'בדיקה',
+    busy: 'בעבודה',
+    ctx: 'הקשר',
+    tier: { light: 'קל', medium: 'בינוני', careful: 'זהיר', heavy: 'כבד', fable: 'פייבל', other: 'אחר' },
+    effort: { low: 'נמוך', medium: 'בינוני', high: 'גבוה', xhigh: 'גבוה מאוד', max: 'מקסימלי' },
   },
 } as const
 
@@ -97,18 +134,27 @@ const STRINGS = {
 let lang: Lang = 'en'
 const tr = () => STRINGS[lang]
 
+// Hebrew draws every row mirrored: crab and title on the right, numbers on the left.
+const isRtl = () => lang === 'he'
+
+// Tier and effort words as shown; anything unknown shows as it came.
+const tierWord = (tier: string): string => (tr().tier as Record<string, string>)[tier] ?? tier
+const effortWord = (effort: string): string => (tr().effort as Record<string, string>)[effort] ?? effort
+
 const isRussian = (v: unknown): boolean => typeof v === 'string' && /^(ru|russian|рус)/i.test(v.trim())
+const isHebrew = (v: unknown): boolean => typeof v === 'string' && /^(he|iw|hebrew|עברית)/i.test(v.trim())
+const langOf = (v: unknown): Lang => (isHebrew(v) ? 'he' : isRussian(v) ? 'ru' : 'en')
 
 async function detectLang($: EngineInterface, option: unknown): Promise<Lang> {
-  if (option === 'en' || option === 'ru') return option
+  if (option === 'en' || option === 'ru' || option === 'he') return option
   try {
     const settings = (await $.settings.read()) as Record<string, unknown>
-    if (typeof settings.language === 'string' && settings.language.trim()) return isRussian(settings.language) ? 'ru' : 'en'
+    if (typeof settings.language === 'string' && settings.language.trim()) return langOf(settings.language)
   } catch {
     // No settings: fall through to the locale.
   }
   const locale = (await $.env.get('LC_ALL')) || (await $.env.get('LC_MESSAGES')) || (await $.env.get('LANG'))
-  return isRussian(locale) ? 'ru' : 'en'
+  return langOf(locale)
 }
 
 const blank = (): Flow => ({
@@ -174,6 +220,8 @@ const noise = (x: number, y: number): number => {
 const H = 22
 const BAR_H = 16
 const CRAB_W = 26
+// The crab's drawing grid is 30 units wide, props included.
+const CRAB_BOX = 30
 const CELL = 3
 const FONT = "-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',sans-serif"
 
@@ -209,6 +257,11 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   const fillW = Math.round(BAR_W * ratio(f))
   const runW = f.total ? Math.round((BAR_W * Math.min(f.total, f.done + f.running)) / f.total) : 0
   const dots: string[] = []
+  // Positions are worked out left to right; right to left mirrors each box
+  // inside the bar (`bx`) and across the row (`rx`). Text is never mirrored.
+  const rtl = isRtl()
+  const bx = (x: number, w: number): number => (rtl ? BAR_W - x - w : x)
+  const rx = (x: number, w: number): number => (rtl ? W - x - w : x)
 
   // Dithered fill: sparse at the start, dense toward the head.
   const cols = Math.floor(fillW / CELL)
@@ -216,27 +269,31 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
   for (let c = 0; c < cols; c++) {
     const density = 0.35 + 0.6 * Math.pow(c / Math.max(1, cols), 1.2)
     for (let r = 0; r < rows; r++) {
-      if (noise(c, r) < density) dots.push(`<rect class="t${Math.floor(noise(r, c) * 4)}" x="${c * CELL + 1}" y="${r * CELL + 1}" width="2" height="2"/>`)
+      if (noise(c, r) < density) dots.push(`<rect class="t${Math.floor(noise(r, c) * 4)}" x="${bx(c * CELL + 1, 2)}" y="${r * CELL + 1}" width="2" height="2"/>`)
     }
   }
   // Handed to workers, not yet accepted: a faint second layer.
   const faint: string[] = []
   for (let c = cols; c < Math.floor(runW / CELL); c++) {
     for (let r = 0; r < rows; r++) {
-      if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect class="t${Math.floor(noise(r + 5, c) * 4)}" x="${c * CELL + 1}" y="${r * CELL + 1}" width="1.7" height="1.7"/>`)
+      if (noise(c + 7, r + 3) < 0.2) faint.push(`<rect class="t${Math.floor(noise(r + 5, c) * 4)}" x="${bx(c * CELL + 1, 1.7)}" y="${r * CELL + 1}" width="1.7" height="1.7"/>`)
     }
   }
 
   const ticks: string[] = []
   for (let i = 1; i < f.total; i++) {
     const x = Math.round((BAR_W * i) / f.total)
-    if (x > fillW + 4) ticks.push(`<rect x="${x}" y="${BAR_H / 2 - 4}" width="1.5" height="8" rx="0.75"/>`)
+    if (x > fillW + 4) ticks.push(`<rect x="${bx(x, 1.5)}" y="${BAR_H / 2 - 4}" width="1.5" height="8" rx="0.75"/>`)
   }
 
   const text = label(f)
   const pillW = Math.round(18 + text.length * 6.6)
-  const pillX = Math.max(0, Math.min(BAR_W - pillW, fillW - pillW))
+  const pillX = bx(Math.max(0, Math.min(BAR_W - pillW, fillW - pillW)), pillW)
   const percent = `${Math.round(ratio(f) * 100)}%`
+  // `direction="rtl"` puts Hebrew words and numbers in reading order; `start` is then the right edge.
+  const titleAt = rtl ? `x="${W - 16}" direction="rtl" text-anchor="start"` : 'x="16"'
+  const percentAt = rtl ? `x="${CRAB_W + 6}" y="${H / 2 + 4.5}"` : `x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end"`
+  const crabW = CRAB_BOX * 0.8
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
 <style>
@@ -249,9 +306,9 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 @media (prefers-reduced-motion: reduce){.t0,.t1,.t2,.t3{animation:none}}
 </style>
 <defs><clipPath id="c"><rect x="0" y="0" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/></clipPath></defs>
-<circle cx="5" cy="${H / 2}" r="4" fill="${color}"/>
-<text class="t" x="16" y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(title)}</text>
-<g transform="translate(${BAR_X},${y0})">
+<circle cx="${rtl ? W - 5 : 5}" cy="${H / 2}" r="4" fill="${color}"/>
+<text class="t" ${titleAt} y="${H / 2 + 4.5}" font-family="${FONT}" font-size="13" font-weight="500">${xml(title)}</text>
+<g transform="translate(${rx(BAR_X, BAR_W)},${y0})">
 <rect class="k" width="${BAR_W}" height="${BAR_H}" rx="${BAR_H / 2}"/>
 <g clip-path="url(#c)">
 <g fill="${color}">${dots.join('')}</g>
@@ -259,10 +316,10 @@ const rowSvg = (f: Flow, W: number, isWorking: boolean): string => {
 <g class="tk">${ticks.join('')}</g>
 </g>
 <rect x="${pillX}" width="${pillW}" height="${BAR_H}" rx="${BAR_H / 2}" fill="${color}"/>
-<text x="${pillX + pillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle" font-family="${FONT}" font-size="11" font-weight="600" fill="#ffffff">${xml(text)}</text>
+<text x="${pillX + pillW / 2}" y="${BAR_H / 2 + 4}" text-anchor="middle"${rtl ? ' direction="rtl"' : ''} font-family="${FONT}" font-size="11" font-weight="600" fill="#ffffff">${xml(text)}</text>
 </g>
-<text class="m" x="${W - CRAB_W - 6}" y="${H / 2 + 4.5}" text-anchor="end" font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
-${CRAB_CSS}${crab(W - CRAB_W + 1, 0, 'other', false, isWorking, 0.8)}
+<text class="m" ${percentAt} font-family="${FONT}" font-size="12.5" font-variant-numeric="tabular-nums">${percent}</text>
+${CRAB_CSS}${crab(rx(W - CRAB_W + 1, crabW), 0, 'other', false, isWorking, 0.8, rtl)}
 </svg>`
 }
 
@@ -286,13 +343,22 @@ const TIER_COLOR: Record<string, string> = {
 // What each savvy tier runs on, for planned tasks that have no run yet.
 const colorOf = (tier: string): string => TIER_COLOR[tier] ?? '#888780'
 
-const TIER_MODEL: Record<string, string> = {
-  fable: 'Fable · high',
-  heavy: 'Opus · xhigh',
-  careful: 'Opus · high',
-  medium: 'Opus · medium',
-  light: 'Opus · low',
+const TIER_MODEL: Record<string, [model: string, effort: string]> = {
+  fable: ['Fable', 'high'],
+  heavy: ['Opus', 'xhigh'],
+  careful: ['Opus', 'high'],
+  medium: ['Opus', 'medium'],
+  light: ['Opus', 'low'],
 }
+
+// "Opus · xhigh", with the effort word in the panel's language; '' for an unknown tier.
+const tierModel = (tier: string): string => {
+  const m = TIER_MODEL[tier]
+  return m ? `${m[0]} · ${effortWord(m[1])}` : ''
+}
+
+// "Opus 5.5 · low" for a run, or just the model when no effort was seen.
+const runModel = (a: AgentRun): string => (a.effort ? `${modelName(a.model)} · ${effortWord(a.effort)}` : modelName(a.model))
 
 // USD per million tokens: input, output, cache read, cache write (5-minute TTL).
 // The engine reports tokens, not money, so the panel's cost is an estimate.
@@ -489,8 +555,9 @@ const costumeOf = (type: string): string => (type === 'Explore' ? 'explore' : ti
 const CRAB_SCALE = 1.1
 
 // Body and props nest inside `bd` so a prop rides the bob and adds its own motion;
-// legs stay outside it and step on their own.
-const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE): string => {
+// legs stay outside it and step on their own. `mirror` flips the crab inside its
+// own box (x .. x + CRAB_BOX * scale) so it faces left.
+const crab = (x: number, y: number, costume: string, dim = false, isWalking = false, scale = CRAB_SCALE, mirror = false): string => {
   const groups = new Map<string, string[]>([['bd', []]])
   const f: Fill = (cx, cy, w, h, c, cls = 'bd') => {
     if (!groups.has(cls)) groups.set(cls, [])
@@ -501,7 +568,8 @@ const crab = (x: number, y: number, costume: string, dim = false, isWalking = fa
   const group = (cls: string) => `<g class="${cls}">${(groups.get(cls) ?? []).join('')}</g>`
   const props = [...groups.keys()].filter(k => k !== 'bd' && k !== 'la' && k !== 'lb')
   const body = `<g class="bd">${(groups.get('bd') ?? []).join('')}${props.map(group).join('')}</g>`
-  return `<g transform="translate(${x},${y}) scale(${scale})" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
+  const place = mirror ? `translate(${x + CRAB_BOX * scale},${y}) scale(${-scale},${scale})` : `translate(${x},${y}) scale(${scale})`
+  return `<g transform="${place}" opacity="${dim ? 0.45 : 1}" shape-rendering="crispEdges"><g class="c-${costume}${isWalking ? ' run' : ''}">${body}${group('la')}${group('lb')}</g></g>`
 }
 
 const statusMark = (x: number, y: number, status: string, color: string): string => {
@@ -510,6 +578,28 @@ const statusMark = (x: number, y: number, status: string, color: string): string
   if (status === 'failed') return `<path d="M${x - 4} ${y - 4}l8 8M${x + 4} ${y - 4}l-8 8" stroke="#D0453F" stroke-width="1.8" stroke-linecap="round"/>`
   return `<circle cx="${x}" cy="${y}" r="5" fill="none" stroke="#9a9a96" stroke-width="1.4"/><path d="M${x} ${y - 2.5}v2.8l1.8 1.2" fill="none" stroke="#9a9a96" stroke-width="1.4" stroke-linecap="round"/>`
 }
+
+// Panel rows are laid out left to right; in Hebrew each box mirrors across the
+// row (`mx`) and text hugs the mirrored side. `words` text may hold Hebrew and
+// takes `direction="rtl"` (whose `start` is the right edge); numbers stay
+// left to right so "≈$0.25" keeps its order.
+const mx = (W: number, x: number, w = 0): number => (isRtl() ? W - x - w : x)
+
+// Text that starts at x: left-aligned, or right-aligned at the mirrored x.
+const startText = (W: number, x: number, y: number, words = true): string =>
+  !isRtl()
+    ? `x="${x}" y="${y}"`
+    : `x="${W - x}" y="${y}"${words ? ' direction="rtl" text-anchor="start"' : ' text-anchor="end"'}`
+
+// Text that ends at x: right-aligned, or left-aligned at the mirrored x.
+const endText = (W: number, x: number, y: number, words = false): string =>
+  !isRtl() ? `x="${x}" y="${y}" text-anchor="end"` : `x="${W - x}" y="${y}"${words ? ' direction="rtl" text-anchor="end"' : ''}`
+
+const crabWidth = (scale: number): number => Math.round(CRAB_BOX * scale * 100) / 100
+
+// A panel crab at x in a row of width W: on the mirrored side and facing left in Hebrew.
+const rowCrab = (W: number, x: number, y: number, costume: string, dim = false, isWalking = false): string =>
+  crab(mx(W, x, crabWidth(CRAB_SCALE)), y, costume, dim, isWalking, CRAB_SCALE, isRtl())
 
 const svg = (W: number, H: number, body: string): string =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${PANE_CSS}${CRAB_CSS}${body}</svg>`
@@ -521,13 +611,13 @@ const headerSvg = (W: number, title: string, t: ReturnType<typeof totals>): stri
   const tw = (W - gap * 2) / 3
   const top = title ? 28 : 0
   const tile = (i: number, k: string, v: string) =>
-    `<rect class="tile" x="${i * (tw + gap)}" y="${top}" width="${tw}" height="40" rx="8"/>
-<text class="s" x="${i * (tw + gap) + 9}" y="${top + 16}" font-family="${FONT}" font-size="11">${k}</text>
-<text class="t" x="${i * (tw + gap) + 9}" y="${top + 33}" font-family="${FONT}" font-size="15" font-weight="600" font-variant-numeric="tabular-nums">${v}</text>`
+    `<rect class="tile" x="${mx(W, i * (tw + gap), tw)}" y="${top}" width="${tw}" height="40" rx="8"/>
+<text class="s" ${startText(W, i * (tw + gap) + 9, top + 16)} font-family="${FONT}" font-size="11">${k}</text>
+<text class="t" ${startText(W, i * (tw + gap) + 9, top + 33, false)} font-family="${FONT}" font-size="15" font-weight="600" font-variant-numeric="tabular-nums">${v}</text>`
   return svg(
     W,
     headerHeight(title),
-    `${title ? `<text class="t" x="0" y="15" font-family="${FONT}" font-size="14" font-weight="600">${xml(fitText(title, 14, W))}</text>` : ''}
+    `${title ? `<text class="t" ${startText(W, 0, 15)} font-family="${FONT}" font-size="14" font-weight="600">${xml(fitText(title, 14, W))}</text>` : ''}
 ${tile(0, s.cost, '≈' + fmtCost(t.cost))}${tile(1, s.tokens, fmtTokens(t.tokens))}${tile(2, s.time, fmtTime(t.time))}`,
   )
 }
@@ -549,12 +639,12 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   const color = colorOf(tier)
   const ctx = ctxOf(a)
   const textW = W - 42 - 22
-  const meta = [a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model)]
+  const meta = [runModel(a)]
   if (a.round > 1) meta.push(`${s.round} ${a.round}`)
   if (a.status === 'failed') meta.push(s.failed)
   const barW = textW
   const progress = progressOf(a)
-  const stats = `ctx ${ctx}% · ${fmtTokens(a.contextTokens)}  ≈${fmtCost(a.costUsd)}  ${fmtTime(elapsed(a, at))}`
+  const stats = `${s.ctx} ${ctx}% · ${fmtTokens(a.contextTokens)}  ≈${fmtCost(a.costUsd)}  ${fmtTime(elapsed(a, at))}`
   const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' · ' + a.stepNote : ''}` : ''
   const stepsW = Math.max(0, barW - textWidth(stats, 11) - 12)
   // Without reported steps the bar falls back to the context, drawn grey.
@@ -562,13 +652,13 @@ const agentSvg = (W: number, a: AgentRun, at: number): string => {
   return svg(
     W,
     66,
-    `${crab(0, 14, costumeOf(a.type), false, a.status === 'running')}
-<text class="t" x="42" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(a.description || a.type, 13, textW))}</text>
-<text x="42" y="34" font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tier === 'other' ? a.type : tier)}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
-${steps && stepsW > 30 ? `<text class="t" x="42" y="49" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
-<text class="s" x="${42 + barW}" y="49" text-anchor="end" font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
-<rect class="k" x="42" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="42" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
-${statusMark(W - 8, 16, a.status, color)}
+    `${rowCrab(W, 0, 14, costumeOf(a.type), false, a.status === 'running')}
+<text class="t" ${startText(W, 42, 18)} font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(a.description || a.type, 13, textW))}</text>
+<text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tier === 'other' ? a.type : tierWord(tier))}</tspan><tspan class="s">  ${xml(meta.join('  ·  '))}</tspan></text>
+${steps && stepsW > 30 ? `<text class="t" ${startText(W, 42, 49)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(fitText(steps, 11, stepsW))}</text>` : ''}
+<text class="s" ${endText(W, 42 + barW, 49, true)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${stats}</text>
+<rect class="k" x="${mx(W, 42, barW)}" y="55" width="${barW}" height="4" rx="2"/><rect${progress === null ? ' class="m"' : ''} x="${mx(W, 42, fillW)}" y="55" width="${fillW}" height="4" rx="2"${progress === null ? '' : ` fill="${color}"`}/>
+${statusMark(mx(W, W - 8), 16, a.status, color)}
 <line class="ln" x1="0" y1="65.5" x2="${W}" y2="65.5"/>`,
   )
 }
@@ -577,15 +667,15 @@ const plannedSvg = (W: number, p: Planned): string => {
   const tier = p.tier in TIER_COLOR ? p.tier : 'other'
   const color = colorOf(tier)
   const textW = W - 42 - 22
-  const meta = [TIER_MODEL[tier] ?? '']
+  const meta = [tierModel(tier)]
   if (p.after.length) meta.push(`${tr().after} ${p.after.join(', ')}`)
   return svg(
     W,
     46,
-    `${crab(0, 6, tier, true)}
-<text class="s" x="42" y="18" font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(`${p.n}. ${p.title}`, 13, textW))}</text>
-<text x="42" y="34" font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tier)}</tspan><tspan class="m">  ${xml(meta.filter(Boolean).join('  ·  '))}</tspan></text>
-${statusMark(W - 8, 16, 'planned', color)}
+    `${rowCrab(W, 0, 6, tier, true)}
+<text class="s" ${startText(W, 42, 18)} font-family="${FONT}" font-size="13" font-weight="600">${xml(fitText(`${p.n}. ${p.title}`, 13, textW))}</text>
+<text ${startText(W, 42, 34)} font-family="${FONT}" font-size="11"><tspan fill="${color}">${xml(tierWord(tier))}</tspan><tspan class="m">  ${xml(meta.filter(Boolean).join('  ·  '))}</tspan></text>
+${statusMark(mx(W, W - 8), 16, 'planned', color)}
 <line class="ln" x1="0" y1="45.5" x2="${W}" y2="45.5"/>`,
   )
 }
@@ -600,14 +690,14 @@ const compactSvg = (W: number, list: AgentRun[], planned: Planned[], t: ReturnTy
   const shown = icons.slice(0, fit)
   const more = icons.length - shown.length
   const body = shown
-    .map((ic, i) => crab(i * 36, 0, ic.k, ic.dim, ic.s === 'running') + (ic.s === 'running' ? `<circle class="live" cx="${i * 36 + 32}" cy="4" r="3" fill="${ic.c}"/>` : ''))
+    .map((ic, i) => rowCrab(W, i * 36, 0, ic.k, ic.dim, ic.s === 'running') + (ic.s === 'running' ? `<circle class="live" cx="${mx(W, i * 36 + 32)}" cy="4" r="3" fill="${ic.c}"/>` : ''))
     .join('')
   const x = shown.length * 36 + (more ? 4 : 0)
   return svg(
     W,
     32,
-    `${body}${more ? `<text class="s" x="${x}" y="21" font-family="${FONT}" font-size="12">+${more}</text>` : ''}
-<text class="s" x="${W}" y="21" text-anchor="end" font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
+    `${body}${more ? `<text class="s" ${startText(W, x, 21, false)} font-family="${FONT}" font-size="12">+${more}</text>` : ''}
+<text class="s" ${endText(W, W, 21)} font-family="${FONT}" font-size="12" font-variant-numeric="tabular-nums">≈${fmtCost(t.cost)} · ${fmtTokens(t.tokens)} · ${fmtTime(t.time)}</text>`,
   )
 }
 
@@ -886,7 +976,7 @@ export const register: Register = (on, options) => {
     const toggleDone = (
       <Button
         key="done"
-        label={`${p.isDoneCollapsed ? '▸' : '▾'} ${s.finished} · ${finished.length}`}
+        label={`${p.isDoneCollapsed ? (isRtl() ? '◂' : '▸') : '▾'} ${s.finished} · ${finished.length}`}
         plain
         onPress={() => update($, panel, prev => ({ ...prev, isDoneCollapsed: !prev.isDoneCollapsed }))}
       />
@@ -903,16 +993,18 @@ export const register: Register = (on, options) => {
         </Text>
       )
 
+      // In Hebrew the column hugs the right edge: section heads and buttons right-aligned.
+      const align = isRtl() ? 'flex-end' : undefined
       if (p.isCompact) {
         return (
-          <Box flexDirection="column" gap={1}>
+          <Box flexDirection="column" gap={1} alignItems={align}>
             <Svg source={compactSvg(W, list, planned, t)} alt={`${list.length} ${s.agentsCount}, ${summary}`} width={W} height={32} />
             {toggleCompact}
           </Box>
         )
       }
       return (
-        <Box flexDirection="column">
+        <Box flexDirection="column" alignItems={align}>
           <Svg source={headerSvg(W, title, t)} alt={title ? `${title}: ${summary}` : summary} width={W} height={headerHeight(title)} />
           {toggleCompact}
           {isEmpty && <Text dimColor>{s.empty}</Text>}
@@ -941,7 +1033,7 @@ export const register: Register = (on, options) => {
       const color = colorOf(tier)
       const ctx = ctxOf(a)
       const progress = progressOf(a)
-      const model = a.effort ? `${modelName(a.model)} · ${a.effort}` : modelName(a.model)
+      const model = runModel(a)
       const steps = a.stepTotal ? `${a.stepDone ?? 0}/${a.stepTotal}${a.stepNote ? ' ' + a.stepNote : ''} · ` : ''
       return (
         <Box key={a.id} flexDirection="column" marginBottom={1}>
@@ -954,7 +1046,7 @@ export const register: Register = (on, options) => {
           </Box>
           <Text dimColor wrap="truncate-end">
             {'  '}
-            {tier === 'other' ? a.type : tier} · {model}
+            {tier === 'other' ? a.type : tierWord(tier)} · {model}
             {a.round > 1 ? ` · ${s.round} ${a.round}` : ''}
           </Text>
           <Text wrap="truncate-end">
@@ -962,7 +1054,7 @@ export const register: Register = (on, options) => {
             {progress === null ? <Text dimColor>{ctxBar(ctx, barW)}</Text> : <Text color={color}>{ctxBar(progress * 100, barW)}</Text>}
             <Text dimColor>
               {' '}
-              {steps}ctx {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
+              {steps}{s.ctx} {ctx}% · {fmtTokens(a.contextTokens)} ≈{fmtCost(a.costUsd)} {fmtTime(elapsed(a, at))}
             </Text>
           </Text>
         </Box>
@@ -1010,7 +1102,7 @@ export const register: Register = (on, options) => {
                   </Text>
                   <Text dimColor wrap="truncate-end">
                     {'  '}
-                    {tier} · {TIER_MODEL[tier] ?? ''}
+                    {tierWord(tier)} · {tierModel(tier)}
                     {pl.after.length ? ` · ${s.after} ${pl.after.join(', ')}` : ''}
                   </Text>
                 </Box>
@@ -1051,7 +1143,7 @@ export const register: Register = (on, options) => {
       // and their gaps. No floor above the slot: a row wider than it would wrap.
       const width = Math.max(180, Math.min(1600, (e.props.bodyColumns || 100) * 8 - 96))
       return (
-        <Box flexDirection="row" alignItems="center" gap={1}>
+        <Box flexDirection={isRtl() ? 'row-reverse' : 'row'} alignItems="center" gap={1}>
           <Svg source={rowSvg(f, width, isWorking)} alt={`${f.title}: ${label(f)}, ${percent}`} width={width} height={H} />
           {crewButton}
           {dismiss}
