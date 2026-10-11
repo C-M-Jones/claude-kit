@@ -8,7 +8,7 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 ## Tools it adds
 
 - `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks.
-- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead.
+- `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead. The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
 Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`), not a bill.
 

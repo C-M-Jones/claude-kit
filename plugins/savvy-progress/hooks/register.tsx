@@ -14,6 +14,12 @@ const now = atom({ plugin: 'savvy-progress', key: 'now' } as const, 0)
 
 const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
+// Added to the end of each savvy worker's brief. Their system prompt words step
+// reporting as a condition ("if the step tool appears among your tools") and they
+// skip it even with the tool listed; the same request in the brief is followed.
+const STEP_BRIEF = `
+
+Progress reporting: before any other work, call \`${STEP_TOOL}\` with \`total\` (your plan in 3-8 steps) and \`done: 0\`; call it again with \`done\` and a few-word \`note\` as each step finishes. It only draws a progress bar.`
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
 const ACCENT = '#8f8cf4'
@@ -690,6 +696,8 @@ export const register: Register = (on, options) => {
         },
         required: ['done'],
       },
+      // In every agent's tool list, not behind ToolSearch: workers do not go looking for it.
+      isDeferred: false,
     })
     await $.command.register({
       name: 'agents-info',
@@ -758,7 +766,8 @@ export const register: Register = (on, options) => {
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const started = await next(e)
+    const isUnbriefed = e.subagentType.startsWith('savvy-') && !e.prompt.includes(STEP_TOOL)
+    const started = await next(isUnbriefed ? { ...e, prompt: e.prompt + STEP_BRIEF } : e)
     if (started.deny !== undefined) return started
 
     const at = await $.clock.now()
