@@ -16,6 +16,12 @@ const TOOL = 'mcp__savvy-progress__progress'
 const STEP_TOOL = 'mcp__savvy-progress__step'
 const PANE = 'savvy-agents'
 const PHASES: readonly Phase[] = ['plan', 'design', 'delegate', 'review', 'close']
+const TIERS: readonly string[] = ['fable', 'heavy', 'careful', 'medium', 'light']
+// The tools' schemas are advice to the model, not a check: what a call may ask
+// the band and the panel to draw is bounded here.
+const MAX_TASKS = 200
+const MAX_AFTER = 20
+const MAX_TITLE = 120
 const ACCENT = '#8f8cf4'
 const DONE = '#5fbf8f'
 
@@ -122,27 +128,34 @@ const blank = (): Flow => ({
 })
 
 const isNewFlow = (prev: Flow | null, input: ProgressInput): boolean =>
-  !prev || prev.isFinished || (input.title !== undefined && input.title.trim() !== prev.title)
+  !prev || prev.isFinished || (input.title !== undefined && clip(input.title.trim(), MAX_TITLE) !== prev.title)
+
+// Only a known tier is kept: the name is later a key into the tier tables.
+const tierName = (v: string): string => {
+  const t = v.replace(/^savvy-/, '').trim().toLowerCase()
+  return TIERS.includes(t) ? t : ''
+}
 
 const cleanTasks = (tasks: ProgressInput['tasks']): PlannedTask[] | undefined =>
   tasks
     ?.filter(t => t.title?.trim())
+    .slice(0, MAX_TASKS)
     .map(t => ({
       title: (t.title ?? '').trim(),
-      tier: (t.tier ?? '').replace(/^savvy-/, '').trim().toLowerCase(),
-      after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0),
+      tier: tierName(t.tier ?? ''),
+      after: (t.after ?? []).filter(n => Number.isInteger(n) && n > 0).slice(0, MAX_AFTER),
     }))
 
 const merge = (prev: Flow | null, input: ProgressInput): Flow => {
   // A new title means a new flow: never carry counters over from an earlier one.
   const base = isNewFlow(prev, input) || !prev ? blank() : { ...blank(), ...prev }
   const tasks = cleanTasks(input.tasks) ?? base.tasks
-  const total = Math.max(0, Math.round(input.total ?? (input.tasks ? tasks.length : base.total)))
+  const total = Math.min(MAX_TASKS, Math.max(0, Math.round(input.total ?? (input.tasks ? tasks.length : base.total))))
   const done = Math.min(total || Infinity, Math.max(0, Math.round(input.done ?? base.done)))
   const phase = input.phase && PHASES.includes(input.phase) ? input.phase : base.phase
   return {
     ...base,
-    title: input.title?.trim() || base.title,
+    title: clip(input.title?.trim() || base.title, MAX_TITLE),
     total,
     done,
     phase: input.finished ? 'close' : phase,
@@ -336,7 +349,7 @@ const windowOf = (model: string): number => (/haiku/i.test(model) ? 200_000 : 1_
 const tierOf = (type: string): string => {
   const bare = type.replace(/^[^:]*:/, '')
   const t = bare.replace(/^savvy-/, '').toLowerCase()
-  return t in TIER_COLOR && bare.startsWith('savvy-') ? t : 'other'
+  return Object.hasOwn(TIER_COLOR, t) && bare.startsWith('savvy-') ? t : 'other'
 }
 
 const modelName = (id: string): string => {
@@ -683,7 +696,7 @@ export const register: Register = (on, options) => {
               type: 'object',
               properties: {
                 title: { type: 'string', description: 'A few words; reused verbatim as the Agent description.' },
-                tier: { type: 'string', enum: ['fable', 'heavy', 'careful', 'medium', 'light'] },
+                tier: { type: 'string', enum: [...TIERS] },
                 after: { type: 'array', items: { type: 'integer' }, description: 'Numbers of the tasks this one waits for.' },
               },
               required: ['title', 'tier'],
@@ -820,7 +833,7 @@ export const register: Register = (on, options) => {
 
     const model = usage.model || e.model
     await update($, agents, list =>
-      list.map(a =>
+      list.map((a): AgentRun =>
         a.agentId !== agentId
           ? a
           : {
@@ -854,7 +867,7 @@ export const register: Register = (on, options) => {
     if (agentId) {
       const at = await $.clock.now()
       await update($, agents, list =>
-        list.map(a => {
+        list.map((a): AgentRun => {
           if (a.agentId !== agentId) return a
           // A run whose steps went unseen still gets the turn's own sum.
           const fallback = a.steps === 0 && e.usage
