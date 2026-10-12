@@ -848,6 +848,8 @@ export const register: Register = (on, options) => {
     if (e.subagentType.startsWith('savvy-')) {
       const f = await read($, flow)
       await autoOpen($, f && !f.isFinished ? f.title : 'savvy-flow')
+    } else if (options.autoOpen === 'any') {
+      await autoOpen($, 'any-agent')
     }
     return started
   })

@@ -18,6 +18,16 @@
         "en",
         "ru"
       ]
+    },
+    "autoOpen": {
+      "type": "string",
+      "title": "Open the agents panel",
+      "description": "savvy: when a savvy-flow worker starts or a plan is reported; any: also when any other subagent starts",
+      "default": "savvy",
+      "options": [
+        "savvy",
+        "any"
+      ]
     }
   },
   "homepage": "https://github.com/johnnyvizz/claude-kit/tree/main/plugins/savvy-progress",
