@@ -15,7 +15,7 @@ A Claude Code mod: a progress bar above the prompt and a live panel of subagents
 - `mcp__savvy-progress__progress`: the orchestrator reports the plan, phase and accepted tasks. Working alone, it reports each step's `status`, `summary` and optional `avatar` instead. Only the main session can: a call from a subagent is ignored, so a worker cannot rename, finish or reset the flow.
 - `mcp__savvy-progress__step`: a worker reports its own steps (`done`, `total`, `note`). A worker that does not report shows its context fill in grey instead. The tool is listed up front rather than behind ToolSearch, and each `savvy-*` worker gets one line at the end of its brief asking for these reports.
 
-Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/register.tsx`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
+Cost is a rough estimate from token counts and a built-in per-model price table (`PRICES` in `hooks/models.ts`, list prices as of 2026-10-10), not a bill. Cache writes are priced at the 1-hour rate, which is what Claude Code writes on a subscription; a session that writes 5-minute entries is overestimated there.
 
 ## Settings
 
@@ -26,5 +26,9 @@ Cost is a rough estimate from token counts and a built-in per-model price table 
 ```
 
 `autoOpen`: `savvy` (default) or `any`. With `savvy` the panel opens by itself when a `savvy-*` worker starts or a plan is reported. With `any` it also opens, once per session, when any other subagent starts. `/agents-info` toggles it either way.
+
+## Code layout
+
+`hooks/register.tsx` holds every hook, every function that takes `$`, and the state atoms. The engine reads those statically, from the entry file only. Everything else is pure and split by part: `flow.ts`, `crabs.ts`, `bar.ts`, `panel-svg.ts`, `background.ts`, `files.ts`, `models.ts`, `text.ts`, `i18n.ts` and `constants.ts`. The header of `register.tsx` maps them. Tests sit beside them as `*.test.ts` and run with `claude plugin test plugins/savvy-progress`.
 
 Install instructions are in the [repository README](../../README.md).
