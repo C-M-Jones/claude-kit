@@ -935,6 +935,8 @@ ${lines.map((l, i) => `<text class="s" ${startText(W, STEP_X, 35 + i * 15)} font
 // --- background shell commands, followed through their output files.
 
 const BG_SILENT_MS = 60_000
+// What a background task's ID looks like; anything else did not come from the engine.
+const BG_ID = /^[A-Za-z0-9_-]{1,64}$/
 const BG_READ_MAX = 4 * 1024 * 1024
 const BG_KEEP_DONE = 5
 
@@ -999,14 +1001,19 @@ const bgHeight = (W: number, b: BackgroundTask): number => 56 + (bgTitleLines(W,
 const bgSvg = (W: number, b: BackgroundTask, at: number): string => {
   const silent = isSilent(b, at)
   const color = b.status === 'failed' || b.status === 'killed' ? '#D0453F' : b.status === 'completed' ? '#3B9C5F' : silent ? '#BA7517' : ACCENT
-  const right = `${b.progress !== undefined && b.status === 'running' ? `${Math.round(b.progress * 100)}% · ` : ''}${fmtTime(bgElapsed(b, at))}`
+  // A finished row says how it ended beside its time; a running one, its progress.
+  const right =
+    b.status === 'running'
+      ? `${b.progress !== undefined ? `${Math.round(b.progress * 100)}% · ` : ''}${fmtTime(bgElapsed(b, at))}`
+      : `${bgStatusLabel(b)} · ${fmtTime(bgElapsed(b, at))}`
   const rightW = textWidth(right, 11) + 4
   const barW = W - 24
   const title = bgTitleLines(W, b)
   const dy = (title.length - 1) * 16
   const H = bgHeight(W, b)
   const fill = b.status === 'completed' ? 1 : b.progress
-  // Without a reported figure a running command gets a sweeping bar: alive, amount unknown.
+  // Without a reported figure a running command gets a sweeping bar: alive, amount
+  // unknown. It sweeps only while output keeps coming; a quiet one holds still.
   // One second a sweep, as the once-a-second redraw restarts it.
   const sweepW = Math.round(barW * 0.3)
   const fillW = fill !== undefined ? Math.round(barW * fill) : 0
@@ -1014,7 +1021,7 @@ const bgSvg = (W: number, b: BackgroundTask, at: number): string => {
   const bar =
     fill !== undefined
       ? `<rect x="${mx(W, 24, fillW)}" y="${44 + dy}" width="${fillW}" height="4" rx="2" fill="${color}"/>`
-      : b.status === 'running'
+      : b.status === 'running' && !silent
         ? `<rect x="${mx(W, 24, sweepW)}" y="${44 + dy}" width="${sweepW}" height="4" rx="2" fill="${color}"><animate attributeName="x" values="${mx(W, 24, sweepW)};${mx(W, 24 + barW - sweepW, sweepW)};${mx(W, 24, sweepW)}" dur="1s" repeatCount="indefinite"/></rect>`
         : ''
   return svg(
@@ -1024,7 +1031,7 @@ const bgSvg = (W: number, b: BackgroundTask, at: number): string => {
 ${title.map((l, i) => `<text class="t" ${startText(W, 24, 18 + i * 16)} font-family="${FONT}" font-size="13" font-weight="600">${xml(l)}</text>`).join('')}
 <text ${startText(W, 24, 35 + dy)} font-family="${FONT}" font-size="11.5"${silent ? ` fill="${color}"` : ' class="s"'}>${xml(fitText(bgDetail(b, at), 11.5, W - 24 - rightW - 10))}</text>
 <text class="s" ${endText(W, W, 35 + dy)} font-family="${FONT}" font-size="11" font-variant-numeric="tabular-nums">${xml(right)}</text>
-<rect class="k" x="${mx(W, 24, barW)}" y="${44 + dy}" width="${barW}" height="4" rx="2"/>${bar}
+${b.status === 'running' || b.status === 'completed' ? `<rect class="k" x="${mx(W, 24, barW)}" y="${44 + dy}" width="${barW}" height="4" rx="2"/>` : ''}${bar}
 <line class="ln" x1="0" y1="${H - 0.5}" x2="${W}" y2="${H - 0.5}"/>`,
   )
 }
@@ -1042,7 +1049,8 @@ const bgStatusLine = (list: BackgroundTask[], at: number): string | undefined =>
   if (!b) return undefined
   const more = running.length > 1 ? ` +${running.length - 1}` : ''
   const pct = b.progress !== undefined ? ` · ${Math.round(b.progress * 100)}%` : ''
-  return `⏳ ${clip(b.label, 40)}${pct} · ${fmtTime(bgElapsed(b, at))}${more}`
+  // The numbers first: a narrow status line cuts the name, not the time.
+  return `⏳ ${fmtTime(bgElapsed(b, at))}${pct}${more} · ${clip(b.label, 48)}`
 }
 
 // The task's own progress when the worker reports steps; a finished run is full.
@@ -1192,12 +1200,8 @@ async function followOutput($: EngineInterface, at: number, only?: string): Prom
     } catch {
       // Not written yet: try again next tick. Gone a minute in (cleaned up, or its
       // session ended): the command is not running any more.
-      try {
-        if (at - b.startedAt > 60_000 && !(await $.fs.exists(b.outputFile))) {
-          await update($, bgCommands, all => all.map(x => (x.id === b.id ? { ...x, status: 'killed' as const, endedAt: at } : x)))
-        }
-      } catch {
-        // The check itself failed: leave the row as it is.
+      if (at - b.startedAt > 60_000 && !(await $.fs.exists(b.outputFile).catch(() => false))) {
+        await update($, bgCommands, all => all.map(x => (x.id === b.id ? { ...x, status: 'killed' as const, endedAt: at } : x)))
       }
     }
   }
@@ -1304,6 +1308,9 @@ export const register: Register = (on, options) => {
     } catch {
       // No figures yet: session.measure brings them after the first turn.
     }
+    // A running row with no ID or output file the engine would give was never a
+    // command (an earlier version read them out of any command's output text): it goes.
+    await update($, bgCommands, list => list.filter(b => b.status !== 'running' || (BG_ID.test(b.id) && b.outputFile?.startsWith('/'))))
     return started
   })
 
@@ -1317,15 +1324,18 @@ export const register: Register = (on, options) => {
   // its result names the task and the file its output goes to.
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const result = await next(e)
-    const text = 'text' in result && typeof result.text === 'string' ? result.text : ''
-    const id = /background/i.test(text) ? /with ID: (\S+?)\.?(?:\s|$)/i.exec(text)?.[1] : undefined
+    // Only the engine's own record says a command went to the background. The
+    // text is the command's output and may say anything, this hook's source included.
+    const record = (result.deny === undefined ? result.result : undefined) as { backgroundTaskId?: unknown } | undefined
+    const id = typeof record?.backgroundTaskId === 'string' && BG_ID.test(record.backgroundTaskId) ? record.backgroundTaskId : undefined
     if (!id) return result
+    const text = 'text' in result && typeof result.text === 'string' ? result.text : ''
     const input = e as unknown as { command?: string; description?: string }
     const at = await $.clock.now()
     const task: BackgroundTask = {
       id,
       label: input.description?.trim() || clip((input.command ?? '').trim(), 60) || id,
-      outputFile: /Output is being written to: (\S+?)\.?(?:\s|$)/.exec(text)?.[1],
+      outputFile: /Output is being written to: (\/\S+?)\.?(?:\s|$)/.exec(text)?.[1],
       status: 'running',
       startedAt: at,
       outputBytes: 0,
@@ -1766,7 +1776,7 @@ export const register: Register = (on, options) => {
                       {b.label}
                     </Text>
                     <Text dimColor>
-                      {pct}
+                      {b.status === 'running' ? pct : `${bgStatusLabel(b)} · `}
                       {fmtTime(bgElapsed(b, liveAt))}
                     </Text>
                   </Box>
