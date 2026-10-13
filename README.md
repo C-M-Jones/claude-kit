@@ -1,6 +1,6 @@
 # claude-kit (fork)
 
-> **This is a fork of [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit).** savvy-flow and savvy-progress are [johnnyvizz](https://github.com/johnnyvizz)'s work, and all credit for them goes to johnnyvizz. This fork only adds some extras to savvy-progress, listed [below](#whats-different-in-this-fork). They've been offered back to the original as pull requests ([#14](https://github.com/johnnyvizz/claude-kit/pull/14), [#15](https://github.com/johnnyvizz/claude-kit/pull/15)). If you just want the plugins as their author made them, use [the original repository](https://github.com/johnnyvizz/claude-kit).
+> **This is a fork of [johnnyvizz/claude-kit](https://github.com/johnnyvizz/claude-kit).** The plugins here (savvy-flow, savvy-progress and session-band) are [johnnyvizz](https://github.com/johnnyvizz)'s work, with fixes from contributors to the original, and all credit for them goes there. This fork only adds some extras to savvy-progress, listed [below](#whats-different-in-this-fork). They've been offered back to the original as pull requests ([#14](https://github.com/johnnyvizz/claude-kit/pull/14), [#15](https://github.com/johnnyvizz/claude-kit/pull/15), [#17](https://github.com/johnnyvizz/claude-kit/pull/17)). If you just want the plugins as their author made them, use [the original repository](https://github.com/johnnyvizz/claude-kit).
 
 johnnyvizz's public skills and mods for [Claude Code](https://claude.com/claude-code), in one place. Every item is a standalone plugin under `plugins/`: install only what you need.
 
@@ -14,7 +14,7 @@ savvy-flow and savvy-progress work on their own and light up together: with both
 
 ## What's different in this fork
 
-Additions to **savvy-progress** only. savvy-flow is unchanged.
+Additions to **savvy-progress** only. savvy-flow and session-band are unchanged.
 
 <p><img src="plugins/savvy-progress/docs/bar.png" alt="The savvy-progress bar above the prompt: the task's title, a pixel progress bar at Tasks 2/4, 50%, and the active step's crab" width="720"></p>
 <p><img src="plugins/savvy-progress/docs/panel.png" alt="The agents panel: cost, context and time tiles, session and weekly limits, four steps each with a costumed crab and a summary, and a running background command at 8%" width="460"></p>
