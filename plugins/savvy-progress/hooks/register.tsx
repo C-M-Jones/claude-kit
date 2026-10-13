@@ -125,7 +125,9 @@ const STRINGS = {
     tier: { light: 'light', medium: 'medium', careful: 'careful', heavy: 'heavy', fable: 'fable', other: 'other' },
     effort: { low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max' },
     ctxWord: 'context',
+    file: 'file',
     files: 'files',
+    filesFew: 'files',
     changed: 'changed',
     finder: 'Finder',
     diff: 'Diff',
@@ -182,7 +184,9 @@ const STRINGS = {
     silentFor: 'нет вывода',
     waitingOutput: 'ждём вывода…',
     ctxWord: 'контекста',
+    file: 'файл',
     files: 'файлов',
+    filesFew: 'файла',
     changed: 'изменено',
     finder: 'Finder',
     diff: 'Дифф',
@@ -245,7 +249,9 @@ const STRINGS = {
     silentFor: 'אין פלט כבר',
     waitingOutput: 'ממתין לפלט…',
     ctxWord: 'הקשר',
+    file: 'קובץ',
     files: 'קבצים',
+    filesFew: 'קבצים',
     changed: 'שונו',
     finder: 'Finder',
     diff: 'שינויים',
@@ -1524,9 +1530,19 @@ const fileStats = (file: StepFile): string => {
   return file.isNew ? `${s.fileNew} · ${counts}` : counts
 }
 
+// "1 file", "3 files"; Russian has a third form for 2-4 (but not 12-14).
+const filesWord = (n: number): string => {
+  const s = tr()
+  const last = n % 10
+  const lastTwo = n % 100
+  if (last === 1 && lastTwo !== 11) return s.file
+  if (last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14)) return s.filesFew
+  return s.files
+}
+
 const filesHint = (files: StepFile[], isOpen: boolean): string =>
   files.length
-    ? `${isOpen ? '▾' : '▸'} ${files.length} ${tr().files}${files.some(f => f.edits) ? ` · ${files.filter(f => f.edits).length} ${tr().changed}` : ''}`
+    ? `${isOpen ? '▾' : '▸'} ${files.length} ${filesWord(files.length)}${files.some(f => f.edits) ? ` · ${files.filter(f => f.edits).length} ${tr().changed}` : ''}`
     : ''
 
 async function autoOpen($: EngineInterface, key: string): Promise<void> {
@@ -1771,8 +1787,10 @@ export const register: Register = (on, options) => {
     const input = e as unknown as ProgressInput
     const prev = await read($, flow)
     if (isNewFlow(prev, input) && input.title !== undefined) {
-      // A new flow starts with a clean list; agents still running stay.
+      // A new flow starts with a clean list: agents and background commands
+      // still running stay, what finished belongs to the work before.
       await update($, agents, list => list.filter(a => a.status === 'running'))
+      await update($, bgCommands, list => list.filter(b => b.status === 'running'))
       await update($, snapshots, () => ({}))
     }
     // A host with no clock (a test kit, say) still takes the report: step times then stand at the last tick.

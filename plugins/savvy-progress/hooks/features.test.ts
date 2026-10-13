@@ -94,6 +94,32 @@ test('a quiet background command is announced once per silence', async ($, on) =
   expect(toasts.filter(t => t.startsWith('⏳ Serve'))).toHaveLength(1)
 })
 
+test('a new flow drops background commands that finished before it, keeps running ones', async ($, on) => {
+  const { clock } = engine(on)
+  const outputs: Record<string, string> = { '/tmp/old.out': 'done\n[exited with code 0]\n', '/tmp/live.out': 'working 1/9\n' }
+  for (const id of ['old', 'live']) {
+    on('tool.call', { tool: 'Bash', description: id } as never, async () =>
+      ({ result: { backgroundTaskId: id }, text: `Command running in background with ID: ${id}. Output is being written to: /tmp/${id}.out` }) as never,
+    )
+  }
+  on('fs.stat', async (_$, e) => ({ value: { size: (outputs[(e as { path: string }).path] ?? '').length, mtimeMs: clock.now() } }) as never)
+  on('fs.read', async (_$, e) => ({ value: outputs[(e as { path: string }).path] ?? '' }) as never)
+  await start($)
+
+  await $.tool.call(progress({ title: 'Earlier work', tasks: [{ title: 'Install', status: 'active' }] }))
+  await $.tool.call({ tool: 'Bash', command: 'brew install x', description: 'old', run_in_background: true } as never)
+  await $.tool.call({ tool: 'Bash', command: 'serve', description: 'live', run_in_background: true } as never)
+  await clock.advance(1_000)
+  await clock.advance(1_000)
+
+  await $.tool.call(progress({ title: 'New work', tasks: [{ title: 'Design', status: 'active' }] }))
+  const ui = await $.ui.mount({ plugin: 'savvy-progress', surface: 'desktop', ...PANE } as never)
+  const alts = (await ui.findAll({ type: 'Svg' })).map(s => String(s.props.alt))
+  expect(alts.some(a => a.startsWith('old:'))).toBe(false)
+  expect(alts.some(a => a.startsWith('live:'))).toBe(true)
+  await ui.unmount()
+})
+
 test('a flow that just finished celebrates in its last step\'s costume', async ($, on) => {
   engine(on)
   await $.tool.call(progress({ title: 'Party', tasks: [{ title: 'Ship', status: 'active', avatar: 'racer' }] }))
